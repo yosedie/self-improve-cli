@@ -3,10 +3,11 @@
 
 const fs = require('node:fs/promises');
 const { GROWTH_LEVELS, compileProfilePrompt, evaluatePatch, suggestPatchFromEvent } = require('../src/profile');
-const { initWorkspace, loadProfiles, appendEvent, appendPatchAudit, applyPatchToOverlay, setGrowthLevel, getStatus } = require('../src/state');
+const { initWorkspace, loadProfiles, appendEvent, appendPatchAudit, applyPatchToOverlay, setGrowthLevel, getSelfImproveStatus, getStatus } = require('../src/state');
 const { readFileTool, searchTool, runCommandTool, writeFileTool, editFileTool } = require('../src/tools');
 const { loadConfig, setConfigValue, listPermissionModes, setPermissionMode } = require('../src/config');
 const { runAgentTask, startChat } = require('../src/agent');
+const { learnFromMessage, runDemo, runBackgroundReview } = require('../src/self-improve');
 
 function usage() {
   return `sicli - lightweight self-improve coding CLI
@@ -24,6 +25,10 @@ Usage:
   sicli growth <none|low|medium|high|very_high> [--auto-apply true|false]
   sicli observe --type <kind> --message <text>
   sicli improve --type <kind> --message <text> [--apply]
+  sicli self-improve status
+  sicli self-improve demo [--apply]
+  sicli self-improve learn <message> [--apply]
+  sicli self-improve background-run [--quiet]
   sicli apply-patch <patch.json>
   sicli tool read <file>
   sicli tool search <text> [dir]
@@ -132,6 +137,30 @@ async function main() {
     const result = await runAgentTask(root, prompt, { interactive: false, yes: Boolean(flags.yes), trace: Boolean(flags.trace) });
     process.stdout.write(`${result.text}\n`);
     return;
+  }
+
+  if (command === 'self-improve') {
+    const [action, ...messageParts] = rest;
+    if (!action || action === 'status') {
+      printJson(await getSelfImproveStatus(root));
+      return;
+    }
+    if (action === 'demo') {
+      printJson(await runDemo(root, { apply: Boolean(flags.apply) }));
+      return;
+    }
+    if (action === 'learn') {
+      const message = messageParts.join(' ');
+      if (!message) throw new Error('usage: self-improve learn <message> [--apply]');
+      printJson(await learnFromMessage(root, message, { apply: Boolean(flags.apply), type: 'user_lesson' }));
+      return;
+    }
+    if (action === 'background-run') {
+      const result = await runBackgroundReview(root);
+      if (!flags.quiet) printJson(result);
+      return;
+    }
+    throw new Error(`unknown self-improve action: ${action}`);
   }
 
   if (command === 'permissions') {

@@ -171,6 +171,22 @@ function lessonFromMessage(message) {
 function suggestPatchFromEvent(event) {
   const message = lessonFromMessage(event.message || event.prompt || event.reason || '');
   const lower = message.toLowerCase();
+  if (message.startsWith('User project context:')) {
+    return {
+      reason: 'User project context learned from repeated usage.',
+      patch: [
+        { op: 'add', path: '/memory/project_facts/-', value: message.replace(/^User project context:\s*/, '') }
+      ]
+    };
+  }
+  if (message.startsWith('User preference:')) {
+    return {
+      reason: 'User preference learned from repeated usage.',
+      patch: [
+        { op: 'add', path: '/memory/user_preferences/-', value: message.replace(/^User preference:\s*/, '') }
+      ]
+    };
+  }
   if (/read|context|edit/.test(lower) && /before|tanpa|without|lupa|forgot/.test(lower)) {
     return {
       reason: 'Failure indicates missing context before edit.',

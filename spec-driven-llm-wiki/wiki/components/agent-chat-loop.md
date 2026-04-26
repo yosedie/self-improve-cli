@@ -43,6 +43,8 @@ last_updated: 2026-04-26
 - No TUI, watcher, indexer, LSP, or embeddings.
 - Chat and tool approvals share one readline instance to avoid duplicate echo.
 - Tool failures and max-turn stops are logged into `.selfimprove/events.jsonl` and `.selfimprove/patches.jsonl` for self-improvement.
+- Visible self-improve commands: `self-improve status`, `self-improve demo`, `self-improve learn`, `self-improve background-run`, and chat `/self-improve`.
+- Chat task traces are appended to `.selfimprove/traces.jsonl`; background reviewer scans new traces without blocking chat.
 - Permission modes: `secure`, `partial_secure`, `ai_reviewed`, `auto_approve`.
 - `partial_secure` allows only read/search and git-reversible file writes/edits without asking.
 - `ai_reviewed` uses a clean-context reviewer call for action tools and asks user on denial/error.

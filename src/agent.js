@@ -3,11 +3,12 @@
 const readline = require('node:readline/promises');
 const { stdin: input, stdout: output } = require('node:process');
 const { compileProfilePrompt, evaluatePatch, suggestPatchFromEvent } = require('./profile');
-const { loadProfiles, appendEvent, appendPatchAudit, applyPatchToOverlay } = require('./state');
-const { loadConfig, listProviderPresets, connectProvider, modelsForConfig, setModel, listPermissionModes, setPermissionMode } = require('./config');
+const { loadProfiles, appendEvent, appendPatchAudit, applyPatchToOverlay, setGrowthLevel, getSelfImproveStatus } = require('./state');
+const { loadConfig, setConfigValue, listProviderPresets, connectProvider, modelsForConfig, setModel, listPermissionModes, setPermissionMode } = require('./config');
 const { chatCompletion } = require('./provider');
 const { setProviderApiKey, hasProviderApiKey, secretStatus } = require('./secrets');
 const { readFileTool, searchTool, runCommandTool, writeFileTool, editFileTool } = require('./tools');
+const { learnFromMessage, runDemo, runBackgroundReview, recordTaskTrace, scheduleBackgroundReview } = require('./self-improve');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -116,6 +117,14 @@ function parseToolArgs(toolCall) {
     return JSON.parse(raw);
   } catch {
     throw new Error(`Invalid JSON tool args for ${toolCall.function?.name || 'unknown'}: ${raw}`);
+  }
+}
+
+function safeToolArgs(toolCall) {
+  try {
+    return parseToolArgs(toolCall);
+  } catch {
+    return { raw: toolCall.function?.arguments || '' };
   }
 }
 
@@ -296,13 +305,20 @@ async function runAgentTask(root, prompt, options = {}) {
     { role: 'user', content: prompt }
   ];
   const maxTurns = options.maxTurns || config.max_tool_turns;
+  const started = Date.now();
+  const trace = { prompt, tools: [] };
   let loggedToolFailure = false;
   for (let turn = 0; turn < maxTurns; turn += 1) {
     const requestMessages = trimHistory(messages, config.max_history_messages + 1);
     const assistant = await chatCompletion(root, config, requestMessages, TOOL_SCHEMAS);
     messages.push(assistant);
     const toolCalls = assistant.tool_calls || [];
-    if (!toolCalls.length) return { text: stripThinkBlocks(assistant.content), messages };
+    if (!toolCalls.length) {
+      const text = stripThinkBlocks(assistant.content);
+      await recordTaskTrace(root, { ...trace, final_text: text, duration_ms: Date.now() - started });
+      await scheduleBackgroundReview(root);
+      return { text, messages };
+    }
     for (const toolCall of toolCalls) {
       let result;
       const name = toolCallName(toolCall);
@@ -311,6 +327,7 @@ async function runAgentTask(root, prompt, options = {}) {
       } catch (error) {
         result = { ok: false, error: error.message };
       }
+      trace.tools.push({ name, args: safeToolArgs(toolCall), ok: result.ok, error: result.error || '', summary: summarizeToolResult(result) });
       if (options.interactive) {
         process.stdout.write(`${result.ok ? '✓' : '✗'} ${name} ${summarizeToolResult(result)}\n`);
       }
@@ -332,7 +349,10 @@ async function runAgentTask(root, prompt, options = {}) {
     type: 'max_tool_turns',
     message: `Stopped after max tool turns (${maxTurns}) for prompt "${prompt}"`
   }, options);
-  return { text: `Stopped after max tool turns (${maxTurns}). Self-improve logged this failure.`, messages };
+  const text = `Stopped after max tool turns (${maxTurns}). Self-improve logged this failure.`;
+  await recordTaskTrace(root, { ...trace, final_text: text, stopped_after_max_turns: true, duration_ms: Date.now() - started });
+  await scheduleBackgroundReview(root);
+  return { text, messages };
 }
 
 async function printProviderHelp(root, config) {
@@ -433,6 +453,7 @@ async function handleModelsCommand(root, arg, rl) {
     process.stdout.write(`No model preset for ${config.provider_label}. Use /models <model>.\n`);
     return true;
   }
+  const prompted = !arg;
   let selection = arg;
   process.stdout.write(`Models for ${config.provider_label}:\n`);
   models.forEach((model, index) => {
@@ -443,8 +464,60 @@ async function handleModelsCommand(root, arg, rl) {
   if (!selection) return true;
   const model = /^\d+$/.test(selection) ? models[Number(selection) - 1] : selection;
   if (!model) throw new Error(`Unknown model selection: ${selection}`);
+  if (prompted && !models.includes(model)) {
+    process.stdout.write(`Invalid model selection: ${selection}. Pick a number, or use /models <custom-model>.\n`);
+    return true;
+  }
   const next = await setModel(root, model);
   process.stdout.write(`Model: ${next.model}\n`);
+  return true;
+}
+
+function printSelfImproveResult(result) {
+  process.stdout.write(`Self-improve: ${result.audit.applied ? 'applied' : 'logged'}\n`);
+  process.stdout.write(`Reason: ${result.suggestion.reason}\n`);
+  process.stdout.write(`Gate: ${result.audit.gate.reason}\n`);
+  process.stdout.write(`Patch ops: ${result.suggestion.patch.length}\n`);
+}
+
+async function handleSelfImproveCommand(root, arg) {
+  const [action, ...parts] = String(arg || '').trim().split(/\s+/).filter(Boolean);
+  if (!action || action === 'status') {
+    process.stdout.write(`${JSON.stringify(await getSelfImproveStatus(root), null, 2)}\n`);
+    return true;
+  }
+  if (action === 'demo') {
+    printSelfImproveResult(await runDemo(root, { apply: parts.includes('--apply') }));
+    return true;
+  }
+  if (action === 'enable') {
+    await setGrowthLevel(root, 'medium', { auto_apply: true });
+    await setConfigValue(root, 'self_improve_background', 'true');
+    await setConfigValue(root, 'self_improve_review_every', '1');
+    process.stdout.write('Self-improve enabled: background=true, review_every=1, growth=medium auto_apply=true\n');
+    return true;
+  }
+  if (action === 'growth') {
+    const level = parts[0];
+    if (!level) throw new Error('usage: /self-improve growth <none|low|medium|high|very_high> [--auto-apply true|false]');
+    const autoFlag = parts.includes('--auto-apply') ? parts[parts.indexOf('--auto-apply') + 1] : undefined;
+    const result = await setGrowthLevel(root, level, autoFlag === undefined ? {} : { auto_apply: String(autoFlag) === 'true' });
+    process.stdout.write(`Growth: ${JSON.stringify(result.active.growth)}\n`);
+    return true;
+  }
+  if (action === 'background-run') {
+    const result = await runBackgroundReview(root);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return true;
+  }
+  if (action === 'learn') {
+    const apply = parts.includes('--apply');
+    const message = parts.filter((part) => part !== '--apply').join(' ');
+    if (!message) throw new Error('usage: /self-improve learn <message> [--apply]');
+    printSelfImproveResult(await learnFromMessage(root, message, { apply, type: 'user_lesson' }));
+    return true;
+  }
+  process.stdout.write('Usage: /self-improve [status|enable|growth <level> [--auto-apply true|false]|demo [--apply]|background-run|learn <message> [--apply]]\n');
   return true;
 }
 
@@ -466,7 +539,7 @@ async function handleSlashCommand(root, prompt, rl) {
   const arg = parts.join(' ').trim();
   if (command === '/exit' || command === '/quit') return false;
   if (command === '/help') {
-    process.stdout.write('Commands: /connect [provider], /key, /models [model], /permissions [mode], /config, /help, /exit\n');
+    process.stdout.write('Commands: /connect [provider], /key, /models [model], /permissions [mode], /self-improve [status|enable|growth|demo|learn], /config, /help, /exit\n');
     return true;
   }
   if (command === '/config') {
@@ -482,6 +555,7 @@ async function handleSlashCommand(root, prompt, rl) {
   if (command === '/connect') return handleConnectCommand(root, arg, rl);
   if (command === '/models') return handleModelsCommand(root, arg, rl);
   if (command === '/permissions') return handlePermissionsCommand(root, arg);
+  if (command === '/self-improve') return handleSelfImproveCommand(root, arg);
   process.stdout.write(`Unknown command: ${command}. Use /help.\n`);
   return true;
 }

@@ -45,6 +45,9 @@ node bin/self-improve-cli.js config show
 node bin/self-improve-cli.js profile --prompt
 node bin/self-improve-cli.js improve --type failure --message "edited file without reading context first"
 node bin/self-improve-cli.js improve --type failure --message "edited file without reading context first" --apply
+node bin/self-improve-cli.js self-improve status
+node bin/self-improve-cli.js self-improve demo
+node bin/self-improve-cli.js self-improve demo --apply
 ```
 
 Optional local install:
@@ -95,6 +98,12 @@ sicli> /permissions secure
 sicli> /permissions partial_secure
 sicli> /permissions ai_reviewed
 sicli> /permissions auto_approve
+sicli> /self-improve
+sicli> /self-improve enable
+sicli> /self-improve growth medium --auto-apply true
+sicli> /self-improve demo
+sicli> /self-improve demo --apply
+sicli> /self-improve learn agent repeated bad tool call --apply
 sicli> /config
 ```
 
@@ -138,9 +147,66 @@ Commands that need approval by current permission mode ask interactively unless 
 node bin/self-improve-cli.js chat --yes "run tests and report result"
 ```
 
-## Growth policy
+## Self-improve flow
+
+Self-improve is background harness/profile evolution, not model fine-tuning.
+
+```text
+each chat task
+→ append trace to .selfimprove/traces.jsonl
+→ background reviewer scans new traces
+→ failures become .selfimprove/events.jsonl
+→ proposed JSON patch
+→ .selfimprove/patches.jsonl audit
+→ optional apply into .selfimprove/overlay.profile.json
+→ future prompts use new profile rules/memory
+```
+
+It does not block the main chat flow. The background reviewer runs after tasks when `self_improve_background=true`.
+
+Try it without API key:
+
+```bash
+node bin/self-improve-cli.js self-improve status
+node bin/self-improve-cli.js self-improve demo
+node bin/self-improve-cli.js self-improve demo --apply
+node bin/self-improve-cli.js self-improve background-run
+node bin/self-improve-cli.js profile --prompt
+```
+
+Config knobs:
+
+```bash
+node bin/self-improve-cli.js config set self_improve_background true
+node bin/self-improve-cli.js config set self_improve_review_every 1
+```
+
+Enable automatic profile patching after failures:
+
+```bash
+node bin/self-improve-cli.js growth medium --auto-apply true
+```
+
+Inside chat:
+
+```text
+sicli> /self-improve enable
+sicli> /self-improve
+sicli> /self-improve demo --apply
+```
+
+`/self-improve enable` sets:
+
+```txt
+self_improve_background=true
+self_improve_review_every=1
+growth=medium auto_apply=true
+```
 
 Active profile lives in `.selfimprove/base.profile.json` + `.selfimprove/overlay.profile.json`.
+
+## Growth policy
+
 
 - `none`: no profile mutation
 - `low`: propose only; human may apply safe patches

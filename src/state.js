@@ -9,6 +9,8 @@ const BASE_PROFILE = 'base.profile.json';
 const OVERLAY_PROFILE = 'overlay.profile.json';
 const EVENTS_LOG = 'events.jsonl';
 const PATCHES_LOG = 'patches.jsonl';
+const TRACES_LOG = 'traces.jsonl';
+const OPTIMIZER_STATE = 'optimizer.json';
 
 function statePath(root, file = '') {
   return path.join(root, STATE_DIR, file);
@@ -58,7 +60,7 @@ async function initWorkspace(root = process.cwd()) {
       growth: {}
     });
   }
-  for (const file of [EVENTS_LOG, PATCHES_LOG]) {
+  for (const file of [EVENTS_LOG, PATCHES_LOG, TRACES_LOG]) {
     const target = statePath(root, file);
     if (!(await exists(target))) await fs.writeFile(target, '', 'utf8');
   }
@@ -109,6 +111,15 @@ async function appendEvent(root, event) {
   return record;
 }
 
+async function appendTrace(root, trace) {
+  const record = {
+    ts: new Date().toISOString(),
+    ...trace
+  };
+  await appendJsonLine(statePath(root, TRACES_LOG), record);
+  return record;
+}
+
 async function appendPatchAudit(root, audit) {
   const record = {
     ts: new Date().toISOString(),
@@ -136,14 +147,58 @@ async function setGrowthLevel(root, level, options = {}) {
   return loadProfiles(root);
 }
 
-async function readRecentJsonLines(file, limit = 20) {
+async function readAllJsonLines(file) {
   if (!(await exists(file))) return [];
   const raw = await fs.readFile(file, 'utf8');
   return raw
     .split(/\r?\n/)
     .filter(Boolean)
-    .slice(-limit)
     .map((line) => JSON.parse(line));
+}
+
+async function readRecentJsonLines(file, limit = 20) {
+  return (await readAllJsonLines(file)).slice(-limit);
+}
+
+async function readOptimizerState(root = process.cwd()) {
+  return readJson(statePath(root, OPTIMIZER_STATE), { last_trace_count: 0, last_run_at: null });
+}
+
+async function writeOptimizerState(root, state) {
+  await writeJson(statePath(root, OPTIMIZER_STATE), state);
+  return state;
+}
+
+async function getSelfImproveStatus(root = process.cwd()) {
+  const { active, overlay } = await loadProfiles(root);
+  const events = await readAllJsonLines(statePath(root, EVENTS_LOG));
+  const patches = await readAllJsonLines(statePath(root, PATCHES_LOG));
+  const traces = await readAllJsonLines(statePath(root, TRACES_LOG));
+  const optimizer = await readOptimizerState(root);
+  return {
+    growth: active.growth,
+    files: {
+      overlay: statePath(root, OVERLAY_PROFILE),
+      events: statePath(root, EVENTS_LOG),
+      patches: statePath(root, PATCHES_LOG),
+      traces: statePath(root, TRACES_LOG),
+      optimizer: statePath(root, OPTIMIZER_STATE)
+    },
+    counts: {
+      events: events.length,
+      patches: patches.length,
+      traces: traces.length,
+      overlay_rules: Array.isArray(overlay.rules) ? overlay.rules.length : 0,
+      overlay_lessons: Array.isArray(overlay.memory?.lessons) ? overlay.memory.lessons.length : 0
+    },
+    optimizer,
+    recent_events: events.slice(-5),
+    recent_patches: patches.slice(-5),
+    recent_traces: traces.slice(-5),
+    next: active.growth.auto_apply
+      ? 'Auto-apply is enabled when growth gate allows patch.'
+      : 'Use `self-improve learn <message> --apply` or enable `growth medium --auto-apply true`.'
+  };
 }
 
 async function getStatus(root = process.cwd()) {
@@ -171,8 +226,13 @@ module.exports = {
   loadProfiles,
   saveOverlay,
   appendEvent,
+  appendTrace,
   appendPatchAudit,
   applyPatchToOverlay,
   setGrowthLevel,
+  readAllJsonLines,
+  readOptimizerState,
+  writeOptimizerState,
+  getSelfImproveStatus,
   getStatus
 };

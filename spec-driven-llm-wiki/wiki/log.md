@@ -77,3 +77,11 @@ Wrote `spec/handoff/006.permission-modes.md` with validation results, graph bloc
 ## [2026-04-26] fix | AI-reviewed permission semantics
 
 Fixed `ai_reviewed` mode so profile-`ask` tools go through clean-context AI review instead of immediate user approval. Added default-profile backfill so old `.selfimprove/base.profile.json` files gain new default tool policies such as `write_file` without rewriting base.
+
+## [2026-04-26] spec | Visible self-improve commands
+
+Created and implemented `spec/007.visible-self-improve-commands.md`. Added `src/self-improve.js`, `self-improve status/demo/learn` CLI commands, chat `/self-improve`, status helper, deterministic no-API demo, and README examples.
+
+## [2026-04-26] handoff | Visible self-improve commands
+
+Wrote `spec/handoff/007.visible-self-improve-commands.md` with validation results, graph blocker, open questions, and next steps.
