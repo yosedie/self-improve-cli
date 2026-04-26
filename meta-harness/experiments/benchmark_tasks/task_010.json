@@ -1,0 +1,10 @@
+{
+  "id": "task_010",
+  "name": "Context loss between turns",
+  "prompt": "Step 1: Create a file at C:\\temp\\step1.txt containing 'hello'. Step 2: Read step1.txt. Step 3: Create step2.txt with content from step1.txt + ' world'",
+  "expected_tool": "multiple",
+  "expected_failure": "context lost between turns",
+  "failure_mode": "context_loss",
+  "harness_trigger": "max_history_messages too low preserves context across multi-step task",
+  "description": "Multi-step task where context from step 1 must be available in step 2 and step 3. Harness should preserve context across turns with sufficient max_history_messages."
+}

@@ -1,0 +1,10 @@
+{
+  "id": "task_002",
+  "name": "Shell redirection for file creation",
+  "prompt": "Create a new file at C:\\temp\\test_output.txt containing the text 'hello world' using a shell command",
+  "expected_tool": "run_command",
+  "expected_failure": "shell redirection",
+  "failure_mode": "shell_redirection",
+  "harness_trigger": "agent uses run_command with shell redirection instead of write_file",
+  "description": "Agent uses run_command with shell redirection (cat > or echo >) to create a file. Harness should detect this and add rule to use write_file instead."
+}

@@ -1,0 +1,10 @@
+{
+  "id": "task_001",
+  "name": "Read missing file",
+  "prompt": "Read the contents of C:\\Windows\\System32\\nonexistent_file_xyz.txt",
+  "expected_tool": "read_file",
+  "expected_failure": "ENOENT",
+  "failure_mode": "missing_context",
+  "harness_trigger": "read_file without existence check",
+  "description": "Agent attempts to read a file that does not exist. Harness should detect ENOENT and add a rule to verify file existence before reading."
+}

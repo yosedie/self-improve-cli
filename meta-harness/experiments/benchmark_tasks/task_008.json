@@ -1,0 +1,10 @@
+{
+  "id": "task_008",
+  "name": "Read very large file",
+  "prompt": "Read the file C:\\Windows\\System32\\drivers\\etc\\hosts and display its complete contents",
+  "expected_tool": "read_file",
+  "expected_failure": "result truncated",
+  "failure_mode": "truncation",
+  "harness_trigger": "compact_limit truncates large file output",
+  "description": "Large file gets truncated by compact_limit. Harness could increase compact_limit or implement streaming for large files. Task is actually expected to succeed but show truncation behavior."
+}

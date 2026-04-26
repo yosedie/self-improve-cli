@@ -43,6 +43,17 @@ function validateProfile(profile, label = 'profile') {
   if (!Array.isArray(profile.memory.user_preferences)) throw new Error(`${label}.memory.user_preferences must be an array`);
   if (!Array.isArray(profile.memory.project_facts)) throw new Error(`${label}.memory.project_facts must be an array`);
   if (!Array.isArray(profile.memory.lessons)) throw new Error(`${label}.memory.lessons must be an array`);
+  if (!isPlainObject(profile.harness)) throw new Error(`${label}.harness must be an object`);
+  if (!Number.isInteger(profile.harness.max_tool_turns) || profile.harness.max_tool_turns < 1) throw new Error(`${label}.harness.max_tool_turns must be positive integer`);
+  if (!Number.isInteger(profile.harness.max_history_messages) || profile.harness.max_history_messages < 1) throw new Error(`${label}.harness.max_history_messages must be positive integer`);
+  if (typeof profile.harness.compact_tool_results !== 'boolean') throw new Error(`${label}.harness.compact_tool_results must be boolean`);
+  if (!Number.isInteger(profile.harness.compact_limit) || profile.harness.compact_limit < 1000) throw new Error(`${label}.harness.compact_limit must be integer >= 1000`);
+  if (!isPlainObject(profile.harness.failure_recovery)) throw new Error(`${label}.harness.failure_recovery must be an object`);
+  if (typeof profile.harness.failure_recovery.retry_on_tool_error !== 'boolean') throw new Error(`${label}.harness.failure_recovery.retry_on_tool_error must be boolean`);
+  if (!Number.isInteger(profile.harness.failure_recovery.max_retries) || profile.harness.failure_recovery.max_retries < 0) throw new Error(`${label}.harness.failure_recovery.max_retries must be non-negative integer`);
+  if (typeof profile.harness.failure_recovery.switch_tool_after_2_failures !== 'boolean') throw new Error(`${label}.harness.failure_recovery.switch_tool_after_2_failures must be boolean`);
+  if (!isPlainObject(profile.harness.safety_review)) throw new Error(`${label}.harness.safety_review must be an object`);
+  if (typeof profile.harness.safety_review.enabled !== 'boolean') throw new Error(`${label}.harness.safety_review.enabled must be boolean`);
   return true;
 }
 
@@ -144,7 +155,7 @@ function evaluatePatch(profile, patch, { manual = false } = {}) {
   const maxOps = profile.growth.max_patch_ops;
   if (level === 'none') return { allowed: false, auto: false, reason: 'growth level none forbids profile mutation' };
   if (patch.length > maxOps) return { allowed: false, auto: false, reason: `patch has ${patch.length} ops; max ${maxOps}` };
-  if (patch.some((op) => pathStarts(op.path, ['/id', '/version', '/growth/level', '/growth/auto_apply']))) {
+  if (patch.some((op) => pathStarts(op.path, ['/id', '/version', '/growth/level', '/growth/auto_apply', '/growth/max_patch_ops']))) {
     return { allowed: false, auto: false, reason: 'patch touches protected profile fields' };
   }
 

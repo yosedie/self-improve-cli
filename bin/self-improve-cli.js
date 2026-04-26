@@ -7,7 +7,7 @@ const { initWorkspace, loadProfiles, appendEvent, appendPatchAudit, applyPatchTo
 const { readFileTool, searchTool, runCommandTool, writeFileTool, editFileTool } = require('../src/tools');
 const { loadConfig, setConfigValue, listPermissionModes, setPermissionMode } = require('../src/config');
 const { runAgentTask, startChat } = require('../src/agent');
-const { learnFromMessage, runDemo, runBackgroundReview } = require('../src/self-improve');
+const { learnFromMessage, runDemo, runBackgroundReview, runSelfImprovePropose } = require('../src/self-improve');
 
 function usage() {
   return `sicli - lightweight self-improve coding CLI
@@ -29,6 +29,10 @@ Usage:
   sicli self-improve demo [--apply]
   sicli self-improve learn <message> [--apply]
   sicli self-improve background-run [--quiet]
+  sicli self-improve propose [--dry-run] [--limit <n>]
+  sicli self-improve candidates
+  sicli self-improve rollback [0|1|2]
+  sicli self-improve benchmark
   sicli apply-patch <patch.json>
   sicli tool read <file>
   sicli tool search <text> [dir]
@@ -134,8 +138,21 @@ async function main() {
       await startChat(root, { interactive: true, yes: Boolean(flags.yes), trace: Boolean(flags.trace) });
       return;
     }
-    const result = await runAgentTask(root, prompt, { interactive: false, yes: Boolean(flags.yes), trace: Boolean(flags.trace) });
-    process.stdout.write(`${result.text}\n`);
+    const controller = new AbortController();
+    const onSignal = () => { controller.abort(); };
+    process.on('SIGINT', onSignal);
+    try {
+      const result = await runAgentTask(root, prompt, { interactive: false, yes: Boolean(flags.yes), trace: Boolean(flags.trace), signal: controller.signal });
+      process.stdout.write(`${result.text}\n`);
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        process.stdout.write('[Cancelled]\n');
+      } else {
+        throw error;
+      }
+    } finally {
+      process.removeListener('SIGINT', onSignal);
+    }
     return;
   }
 
@@ -158,6 +175,35 @@ async function main() {
     if (action === 'background-run') {
       const result = await runBackgroundReview(root);
       if (!flags.quiet) printJson(result);
+      return;
+    }
+    if (action === 'propose') {
+      const result = await runSelfImprovePropose(root, {
+        dryRun: Boolean(flags['dry-run']),
+        limit: parseInt(flags.limit || '20', 10)
+      });
+      printJson(result);
+      return;
+    }
+    if (action === 'candidates') {
+      const { readAllJsonLines } = require('../src/state');
+      const candidatesDir = require('node:path').join(root, '.selfimprove', 'candidates');
+      let dirs = [];
+      try {
+        dirs = (await fs.readdir(candidatesDir)).filter((d) => /^run_\d+$/.test(d)).sort();
+      } catch {}
+      printJson({ candidates: dirs, count: dirs.length });
+      return;
+    }
+    if (action === 'rollback') {
+      const n = parseInt(rest[0] || '0', 10);
+      const { rollbackToBackupFromNumber } = require('../src/state');
+      printJson(await rollbackToBackupFromNumber(root, n));
+      return;
+    }
+    if (action === 'benchmark') {
+      const { runBenchmark } = require('../meta-harness/experiments/benchmark_tasks/benchmark_runner');
+      printJson(await runBenchmark(root));
       return;
     }
     throw new Error(`unknown self-improve action: ${action}`);

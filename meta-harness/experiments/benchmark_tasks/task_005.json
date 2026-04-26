@@ -1,0 +1,10 @@
+{
+  "id": "task_005",
+  "name": "Search returns no matches",
+  "prompt": "Search recursively for the text 'XYZZY_PLACEHOLDER_FIND_ME' in all .txt files in the current directory",
+  "expected_tool": "search",
+  "expected_failure": "no matches found",
+  "failure_mode": "empty_result",
+  "harness_trigger": "search pattern has no matches — agent should handle gracefully",
+  "description": "Search returns no results. Harness should handle empty results gracefully and potentially suggest alternative approaches."
+}

@@ -1,6 +1,7 @@
 'use strict';
 
-const readline = require('node:readline/promises');
+const readline = require('node:readline');
+const rlPromises = require('node:readline/promises');
 const { stdin: input, stdout: output } = require('node:process');
 const { compileProfilePrompt, evaluatePatch, suggestPatchFromEvent } = require('./profile');
 const { loadProfiles, appendEvent, appendPatchAudit, applyPatchToOverlay, setGrowthLevel, getSelfImproveStatus } = require('./state');
@@ -129,17 +130,9 @@ function safeToolArgs(toolCall) {
 }
 
 async function askApproval(question, rl) {
-  if (rl) {
-    const answer = await rl.question(`${question} [y/N] `);
-    return /^y(es)?$/i.test(answer.trim());
-  }
-  const approvalRl = readline.createInterface({ input, output });
-  try {
-    const answer = await approvalRl.question(`${question} [y/N] `);
-    return /^y(es)?$/i.test(answer.trim());
-  } finally {
-    approvalRl.close();
-  }
+  if (!rl) throw new Error('askApproval requires rl in interactive mode');
+  const answer = await rl.question(`${question} [y/N] `);
+  return /^y(es)?$/i.test(answer.trim());
 }
 
 async function askToolPermission(name, args, options, reason = '') {
@@ -235,14 +228,14 @@ async function executeTool(root, profile, toolCall, options) {
   const args = parseToolArgs(toolCall);
   await ensureAllowed(root, profile, options.config, name, args, options);
   if (options.trace) process.stderr.write(`tool ${name} ${compactJson(args, 800)}\n`);
-  if (name === 'read_file') return readFileTool(root, args.path);
-  if (name === 'search') return searchTool(root, args.pattern, args.dir || '.');
+  if (name === 'read_file') return readFileTool(root, args.path, { signal: options.signal });
+  if (name === 'search') return searchTool(root, args.pattern, args.dir || '.', { signal: options.signal });
   if (name === 'run_command') {
     validateRunCommandArgs(args);
-    return runCommandTool(root, args.command, args.args || []);
+    return runCommandTool(root, args.command, args.args || [], { signal: options.signal });
   }
-  if (name === 'write_file') return writeFileTool(root, args.path, args.content, { overwrite: args.overwrite !== false });
-  if (name === 'edit_file') return editFileTool(root, args.path, args.old_text, args.new_text);
+  if (name === 'write_file') return writeFileTool(root, args.path, args.content, { signal: options.signal, overwrite: args.overwrite !== false });
+  if (name === 'edit_file') return editFileTool(root, args.path, args.old_text, args.new_text, { signal: options.signal });
   throw new Error(`Unknown tool: ${name || '(missing)'}`);
 }
 
@@ -304,13 +297,13 @@ async function runAgentTask(root, prompt, options = {}) {
     ...(options.history || []),
     { role: 'user', content: prompt }
   ];
-  const maxTurns = options.maxTurns || config.max_tool_turns;
+  const maxTurns = options.maxTurns || active.harness?.max_tool_turns || config.max_tool_turns;
   const started = Date.now();
   const trace = { prompt, tools: [] };
   let loggedToolFailure = false;
   for (let turn = 0; turn < maxTurns; turn += 1) {
-    const requestMessages = trimHistory(messages, config.max_history_messages + 1);
-    const assistant = await chatCompletion(root, config, requestMessages, TOOL_SCHEMAS);
+    const requestMessages = trimHistory(messages, (active.harness?.max_history_messages ?? config.max_history_messages) + 1);
+    const assistant = await chatCompletion(root, config, requestMessages, TOOL_SCHEMAS, options.signal);
     messages.push(assistant);
     const toolCalls = assistant.tool_calls || [];
     if (!toolCalls.length) {
@@ -327,7 +320,17 @@ async function runAgentTask(root, prompt, options = {}) {
       } catch (error) {
         result = { ok: false, error: error.message };
       }
-      trace.tools.push({ name, args: safeToolArgs(toolCall), ok: result.ok, error: result.error || '', summary: summarizeToolResult(result) });
+      const parsedArgs = parseToolArgs(toolCall);
+      trace.tools.push({
+        name,
+        args: safeToolArgs(toolCall),
+        raw_args: parsedArgs,
+        raw_response: result,
+        compact_args: compactJson(parsedArgs, 800),
+        ok: result.ok,
+        error: result.error || '',
+        summary: summarizeToolResult(result)
+      });
       if (options.interactive) {
         process.stdout.write(`${result.ok ? '✓' : '✗'} ${name} ${summarizeToolResult(result)}\n`);
       }
@@ -376,9 +379,11 @@ async function askHidden(question, rl) {
     }
   }
   rl.pause();
+  let nestedInputActive = false;
   return new Promise((resolve, reject) => {
     let value = '';
     const cleanup = () => {
+      nestedInputActive = false;
       input.off('data', onData);
       input.setRawMode(false);
       input.pause();
@@ -406,6 +411,7 @@ async function askHidden(question, rl) {
       }
     };
     output.write(question);
+    nestedInputActive = true;
     input.setRawMode(true);
     input.resume();
     input.on('data', onData);
@@ -561,14 +567,27 @@ async function handleSlashCommand(root, prompt, rl) {
 }
 
 async function startChat(root, options = {}) {
-  const rl = readline.createInterface({ input, output });
+  readline.emitKeypressEvents(process.stdin);
+  if (process.stdin.isTTY) process.stdin.setRawMode(true);
+  const rl = await rlPromises.createInterface({ input, output });
   const history = [];
-  process.stdout.write('self-improve-cli chat. /help for commands. /exit to quit.\n');
+  process.stdout.write('self-improve-cli chat. /help for commands. /exit to quit. Press ESC to cancel task.\n');
+  
+  let nestedInputActive = false;
+  let currentController = null;
+  const keypressHandler = (str, key) => {
+    if (key && key.name === 'escape' && currentController && !nestedInputActive) {
+      currentController.abort();
+      process.stdout.write('\n[Cancelled]\n');
+    }
+  };
+  process.stdin.on('keypress', keypressHandler);
+
   try {
     while (true) {
       let prompt;
       try {
-        prompt = (await rl.question('sicli> ')).trim();
+        prompt = ((await rl.question('sicli> ')) || '').trim();
       } catch (error) {
         if (error.message === 'readline was closed') break;
         throw error;
@@ -584,14 +603,20 @@ async function startChat(root, options = {}) {
         continue;
       }
       try {
-        const result = await runAgentTask(root, prompt, { ...options, interactive: true, history, rl });
+        currentController = new AbortController();
+        const result = await runAgentTask(root, prompt, { ...options, interactive: true, history, rl, signal: currentController.signal });
         process.stdout.write(`${result.text}\n`);
         history.splice(0, history.length, ...result.messages.filter((m) => m.role === 'user' || (m.role === 'assistant' && !m.tool_calls)).slice(-10));
       } catch (error) {
-        process.stderr.write(`Error: ${error.message}\n`);
+        if (error.name === 'AbortError') process.stdout.write('\n[Task Aborted]\n');
+        else process.stderr.write(`Error: ${error.message}\n`);
+      } finally {
+        currentController = null;
       }
     }
   } finally {
+    process.stdin.removeListener('keypress', keypressHandler);
+    if (process.stdin.isTTY) process.stdin.setRawMode(false);
     rl.close();
   }
 }

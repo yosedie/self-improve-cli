@@ -15,12 +15,20 @@ function resolveInside(root, target) {
   return resolved;
 }
 
-async function readFileTool(root, target, { limit = DEFAULT_READ_LIMIT } = {}) {
+async function readFileTool(root, target, { limit = DEFAULT_READ_LIMIT, signal } = {}) {
   const file = resolveInside(root, target);
+  if (signal?.aborted) throw new Error('AbortError');
   const handle = await fs.open(file, 'r');
   try {
+    if (signal?.aborted) {
+      await handle.close();
+      throw new Error('AbortError');
+    }
     const buffer = Buffer.alloc(limit + 1);
     const { bytesRead } = await handle.read(buffer, 0, limit + 1, 0);
+    if (signal?.aborted) {
+      throw new Error('AbortError');
+    }
     const truncated = bytesRead > limit;
     return {
       path: path.relative(root, file) || '.',
@@ -45,9 +53,10 @@ async function* walk(root, dir, options = {}) {
   }
 }
 
-async function writeFileTool(root, target, content, { overwrite = true } = {}) {
+async function writeFileTool(root, target, content, { overwrite = true, signal } = {}) {
   if (!target) throw new Error('write_file path required');
   if (typeof content !== 'string') throw new Error('write_file content must be string');
+  if (signal?.aborted) throw new Error('AbortError');
   const file = resolveInside(root, target);
   await fs.mkdir(path.dirname(file), { recursive: true });
   if (!overwrite) {
@@ -58,6 +67,7 @@ async function writeFileTool(root, target, content, { overwrite = true } = {}) {
       if (error.message === 'file exists and overwrite is false') throw error;
     }
   }
+  if (signal?.aborted) throw new Error('AbortError');
   await fs.writeFile(file, content, 'utf8');
   return {
     path: path.relative(root, file) || '.',
@@ -65,16 +75,19 @@ async function writeFileTool(root, target, content, { overwrite = true } = {}) {
   };
 }
 
-async function editFileTool(root, target, oldText, newText) {
+async function editFileTool(root, target, oldText, newText, { signal } = {}) {
   if (!target) throw new Error('edit_file path required');
   if (typeof oldText !== 'string' || oldText.length === 0) throw new Error('edit_file old_text required');
   if (typeof newText !== 'string') throw new Error('edit_file new_text must be string');
+  if (signal?.aborted) throw new Error('AbortError');
   const file = resolveInside(root, target);
   const content = await fs.readFile(file, 'utf8');
+  if (signal?.aborted) throw new Error('AbortError');
   const first = content.indexOf(oldText);
   if (first === -1) throw new Error('old_text not found');
   if (content.indexOf(oldText, first + oldText.length) !== -1) throw new Error('old_text is not unique');
   const next = `${content.slice(0, first)}${newText}${content.slice(first + oldText.length)}`;
+  if (signal?.aborted) throw new Error('AbortError');
   await fs.writeFile(file, next, 'utf8');
   return {
     path: path.relative(root, file) || '.',
@@ -83,22 +96,27 @@ async function editFileTool(root, target, oldText, newText) {
   };
 }
 
-async function searchTool(root, pattern, dir = '.', { limit = DEFAULT_MATCH_LIMIT, readLimit = DEFAULT_READ_LIMIT } = {}) {
+async function searchTool(root, pattern, dir = '.', { limit = DEFAULT_MATCH_LIMIT, readLimit = DEFAULT_READ_LIMIT, signal } = {}) {
   if (!pattern) throw new Error('search pattern required');
+  if (signal?.aborted) throw new Error('AbortError');
   const start = resolveInside(root, dir);
   const matches = [];
   const needle = String(pattern);
   for await (const file of walk(root, start)) {
+    if (signal?.aborted) return { pattern: needle, truncated: true, matches };
     let text;
     try {
-      const result = await readFileTool(root, path.relative(root, file), { limit: readLimit });
+      const result = await readFileTool(root, path.relative(root, file), { limit: readLimit, signal });
       text = result.content;
       if (text.includes('\u0000')) continue;
-    } catch {
+    } catch (err) {
+      if (err.message === 'AbortError') throw err;
       continue;
     }
+    if (signal?.aborted) return { pattern: needle, truncated: true, matches };
     const lines = text.split(/\r?\n/);
     for (let i = 0; i < lines.length; i += 1) {
+      if (signal?.aborted) return { pattern: needle, truncated: true, matches };
       if (lines[i].includes(needle)) {
         matches.push({ file: path.relative(root, file), line: i + 1, text: lines[i] });
         if (matches.length >= limit) return { pattern: needle, truncated: true, matches };
@@ -108,7 +126,7 @@ async function searchTool(root, pattern, dir = '.', { limit = DEFAULT_MATCH_LIMI
   return { pattern: needle, truncated: false, matches };
 }
 
-function runCommandTool(root, command, args = [], { timeoutMs = 120000 } = {}) {
+function runCommandTool(root, command, args = [], { timeoutMs = 120000, signal } = {}) {
   if (!command) return Promise.reject(new Error('command required'));
   return new Promise((resolve) => {
     const child = spawn(command, args, {
@@ -121,6 +139,15 @@ function runCommandTool(root, command, args = [], { timeoutMs = 120000 } = {}) {
     let stderr = '';
     const cap = 256 * 1024;
     const timer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
+
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        clearTimeout(timer);
+        child.kill('SIGTERM');
+        resolve({ code: null, signal: 'SIGTERM', stdout, stderr, error: 'Command aborted' });
+      }, { once: true });
+    }
+
     child.stdout.on('data', (chunk) => {
       stdout = (stdout + chunk.toString('utf8')).slice(-cap);
     });

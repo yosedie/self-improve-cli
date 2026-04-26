@@ -1,0 +1,10 @@
+{
+  "id": "task_009",
+  "name": "Search in heavy directory",
+  "prompt": "Count all files in node_modules\\.cache directory (if it exists)",
+  "expected_tool": "run_command",
+  "expected_failure": "slow or skipped",
+  "failure_mode": "heavy_directory",
+  "harness_trigger": "searching/running in heavy directories causes slowdown",
+  "description": "Agent accesses a heavy directory (node_modules/.cache). Harness should configure heavy dir exclusion properly or warn user about performance issues."
+}

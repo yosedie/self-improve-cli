@@ -14,9 +14,10 @@ async function apiKeyFromConfig(root, config, env = process.env) {
   throw new Error(`Missing API key for ${config.provider_label || config.provider_id}. Run /connect or /key, or set env ${config.api_key_env}.`);
 }
 
-async function chatCompletion(root, config, messages, tools = []) {
+async function chatCompletion(root, config, messages, tools = [], signal) {
   if (config.provider !== 'openai-compatible') throw new Error(`Unsupported provider: ${config.provider}`);
   const response = await fetch(joinUrl(config.base_url, 'chat/completions'), {
+    signal,
     method: 'POST',
     headers: {
       'content-type': 'application/json',

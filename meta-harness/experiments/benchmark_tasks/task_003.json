@@ -1,0 +1,10 @@
+{
+  "id": "task_003",
+  "name": "Max tool turns exceeded",
+  "prompt": "List all files in the current directory and all subdirectories recursively, then read each .js file found and report their line counts",
+  "expected_tool": "multiple",
+  "expected_failure": "stopped_after_max_turns",
+  "failure_mode": "tool_loop",
+  "harness_trigger": "max_tool_turns too low for complex multi-file tasks",
+  "description": "Complex task requiring many sequential tool calls. Harness should either increase max_tool_turns or add a rule to switch strategy when stuck in loops."
+}

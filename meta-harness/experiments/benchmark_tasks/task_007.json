@@ -1,0 +1,10 @@
+{
+  "id": "task_007",
+  "name": "Command not found",
+  "prompt": "Run the command 'nonexistent_command_xyz --flag --value test' and report its output",
+  "expected_tool": "run_command",
+  "expected_failure": "command not found",
+  "failure_mode": "command_not_found",
+  "harness_trigger": "agent calls a non-existent command",
+  "description": "Agent runs a command that doesn't exist. Harness should handle command-not-found gracefully and potentially verify command availability before execution."
+}
