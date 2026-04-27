@@ -10,6 +10,7 @@ const { chatCompletion } = require('./provider');
 const { setProviderApiKey, hasProviderApiKey, secretStatus } = require('./secrets');
 const { readFileTool, searchTool, runCommandTool, writeFileTool, editFileTool } = require('./tools');
 const { learnFromMessage, runDemo, runBackgroundReview, recordTaskTrace, scheduleBackgroundReview } = require('./self-improve');
+const { validateAskUserArgs, deterministicPolicy, DeferredQuestionsQueue } = require('./ask_gate');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -92,6 +93,26 @@ const TOOL_SCHEMAS = [
         additionalProperties: false
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ask_user',
+      description: 'Submit a question candidate to the user. Only use when the task genuinely requires user authority. In autonomous mode, this goes through a review gate.',
+      parameters: {
+        type: 'object',
+        properties: {
+          question: { type: 'string', description: 'The question to ask' },
+          reason: { type: 'string', description: 'Why this question is necessary' },
+          risk_type: { type: 'string', enum: ['clarification', 'file_write', 'file_delete', 'command_exec', 'external_dependency', 'api_key', 'permission', 'other'], description: 'Category of risk' },
+          files: { type: 'array', items: { type: 'string' }, description: 'Affected file paths' },
+          safe_default: { type: 'string', description: 'What to do if the question is rejected or deferred' },
+          blocking: { type: 'boolean', description: 'Whether the task cannot proceed without an answer' }
+        },
+        required: ['question', 'reason', 'risk_type', 'safe_default'],
+        additionalProperties: false
+      }
+    }
   }
 ];
 
@@ -100,7 +121,8 @@ const TOOL_POLICY_KEYS = {
   search: 'search',
   run_command: 'run_command',
   write_file: 'write_file',
-  edit_file: 'edit_file'
+  edit_file: 'edit_file',
+  ask_user: 'ask_user'
 };
 
 function compactJson(value, limit = 12000) {
@@ -292,15 +314,23 @@ async function recordSelfImprove(root, active, event, options = {}) {
 async function runAgentTask(root, prompt, options = {}) {
   const { active } = await loadProfiles(root);
   const config = await loadConfig(root);
+  let systemContent = systemPrompt(active);
+  if (options.autonomous) {
+    systemContent += '\n\nYou are in autonomous mode. Continue working by default. Do not ask the user unnecessary questions. If you genuinely need user authority, use the ask_user tool. Otherwise, make reasonable decisions and keep going.';
+  }
   const messages = [
-    { role: 'system', content: systemPrompt(active) },
+    { role: 'system', content: systemContent },
     ...(options.history || []),
     { role: 'user', content: prompt }
   ];
-  const maxTurns = options.maxTurns || active.harness?.max_tool_turns || config.max_tool_turns;
+  const maxTurns = options.autonomous
+    ? (options.maxTurns || active.harness?.max_tool_turns_autonomous || config.max_tool_turns_autonomous)
+    : (options.maxTurns || active.harness?.max_tool_turns || config.max_tool_turns);
   const started = Date.now();
   const trace = { prompt, tools: [] };
   let loggedToolFailure = false;
+  const deferredQueue = options.autonomous ? new DeferredQuestionsQueue() : null;
+  let status = 'running';
   for (let turn = 0; turn < maxTurns; turn += 1) {
     const requestMessages = trimHistory(messages, (active.harness?.max_history_messages ?? config.max_history_messages) + 1);
     const assistant = await chatCompletion(root, config, requestMessages, TOOL_SCHEMAS, options.signal);
@@ -308,15 +338,41 @@ async function runAgentTask(root, prompt, options = {}) {
     const toolCalls = assistant.tool_calls || [];
     if (!toolCalls.length) {
       const text = stripThinkBlocks(assistant.content);
+      trace.autonomous = Boolean(options.autonomous);
+      trace.status = 'completed';
+      if (deferredQueue) {
+        trace.deferred_questions = deferredQueue.getAll();
+      }
       await recordTaskTrace(root, { ...trace, final_text: text, duration_ms: Date.now() - started });
       await scheduleBackgroundReview(root);
-      return { text, messages };
+      const result = { text, messages, status: 'completed' };
+      if (deferredQueue) {
+        result.deferredQuestions = deferredQueue.getAll();
+        if (options.interactive) process.stdout.write(deferredQueue.toReport());
+      }
+      return result;
     }
     for (const toolCall of toolCalls) {
       let result;
       const name = toolCallName(toolCall);
       try {
-        result = normalizeToolExecution(name, await executeTool(root, active, toolCall, { ...options, root, config }));
+        if (name === 'ask_user' && options.autonomous) {
+          const candidate = validateAskUserArgs(parseToolArgs(toolCall));
+          const decision = deterministicPolicy(candidate);
+          if (decision.action === 'approve') {
+            result = { ok: true, result: { gate: 'approved', answer: 'User has approved this question via gate.' } };
+          } else {
+            result = { ok: true, result: { gate: decision.action, safe_default: candidate.safe_default } };
+            deferredQueue.push({ turn, question: candidate.question, reason: candidate.reason, risk_type: candidate.risk_type, files: candidate.files, safe_default: candidate.safe_default, blocking: candidate.blocking, tool_call_id: toolCall.id });
+            if (candidate.blocking && decision.action === 'reject') {
+              status = 'blocked';
+            }
+          }
+        } else if (name === 'ask_user' && !options.autonomous) {
+          result = { ok: false, error: 'ask_user tool requires autonomous mode. Run with --dont-ask or set autonomous: true.' };
+        } else {
+          result = normalizeToolExecution(name, await executeTool(root, active, toolCall, { ...options, root, config }));
+        }
       } catch (error) {
         result = { ok: false, error: error.message };
       }
@@ -353,9 +409,17 @@ async function runAgentTask(root, prompt, options = {}) {
     message: `Stopped after max tool turns (${maxTurns}) for prompt "${prompt}"`
   }, options);
   const text = `Stopped after max tool turns (${maxTurns}). Self-improve logged this failure.`;
+  trace.autonomous = Boolean(options.autonomous);
+  trace.status = 'max_turns';
+  if (deferredQueue) trace.deferred_questions = deferredQueue.getAll();
   await recordTaskTrace(root, { ...trace, final_text: text, stopped_after_max_turns: true, duration_ms: Date.now() - started });
   await scheduleBackgroundReview(root);
-  return { text, messages };
+  const result = { text, messages, status: 'max_turns' };
+  if (deferredQueue) {
+    result.deferredQuestions = deferredQueue.getAll();
+    if (options.interactive) process.stdout.write(deferredQueue.toReport());
+  }
+  return result;
 }
 
 async function printProviderHelp(root, config) {

@@ -16,7 +16,7 @@ function usage() {
 
 Usage:
   sicli
-  sicli chat [prompt...] [--yes] [--trace]
+  sicli chat [prompt...] [--yes] [--trace] [--dont-ask]
   sicli config show
   sicli config get <key>
   sicli config set <key> <value>
@@ -146,15 +146,22 @@ async function main() {
 
   if (command === 'chat') {
     const prompt = rest.join(' ').trim();
+    const isAutonomous = Boolean(flags.autonomous) || Boolean(flags['dont-ask']);
     if (!prompt) {
-      await startChat(root, { interactive: true, yes: Boolean(flags.yes), trace: Boolean(flags.trace) });
+      await startChat(root, { interactive: true, yes: Boolean(flags.yes), trace: Boolean(flags.trace), autonomous: isAutonomous });
       return;
     }
     const controller = new AbortController();
     const onSignal = () => { controller.abort(); };
     process.on('SIGINT', onSignal);
     try {
-      const result = await runAgentTask(root, prompt, { interactive: false, yes: Boolean(flags.yes), trace: Boolean(flags.trace), signal: controller.signal });
+      const result = await runAgentTask(root, prompt, { interactive: false, yes: Boolean(flags.yes), trace: Boolean(flags.trace), signal: controller.signal, autonomous: isAutonomous });
+      if (isAutonomous) {
+        process.stdout.write(`Status: ${result.status}\n`);
+        if (result.deferredQuestions && result.deferredQuestions.length) {
+          process.stdout.write(`Deferred questions: ${result.deferredQuestions.length}\n`);
+        }
+      }
       process.stdout.write(`${result.text}\n`);
     } catch (error) {
       if (error.name === 'AbortError') {

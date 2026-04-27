@@ -35,6 +35,7 @@
   },
   "harness": {
     "max_tool_turns": 8,
+    "max_tool_turns_autonomous": 50,
     "max_history_messages": 20,
     "compact_tool_results": true,
     "compact_limit": 12000,

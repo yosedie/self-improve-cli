@@ -45,6 +45,7 @@ function validateProfile(profile, label = 'profile') {
   if (!Array.isArray(profile.memory.lessons)) throw new Error(`${label}.memory.lessons must be an array`);
   if (!isPlainObject(profile.harness)) throw new Error(`${label}.harness must be an object`);
   if (!Number.isInteger(profile.harness.max_tool_turns) || profile.harness.max_tool_turns < 1) throw new Error(`${label}.harness.max_tool_turns must be positive integer`);
+  if (!Number.isInteger(profile.harness.max_tool_turns_autonomous) || profile.harness.max_tool_turns_autonomous < 1) throw new Error(`${label}.harness.max_tool_turns_autonomous must be positive integer`);
   if (!Number.isInteger(profile.harness.max_history_messages) || profile.harness.max_history_messages < 1) throw new Error(`${label}.harness.max_history_messages must be positive integer`);
   if (typeof profile.harness.compact_tool_results !== 'boolean') throw new Error(`${label}.harness.compact_tool_results must be boolean`);
   if (!Number.isInteger(profile.harness.compact_limit) || profile.harness.compact_limit < 1000) throw new Error(`${label}.harness.compact_limit must be integer >= 1000`);

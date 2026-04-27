@@ -46,9 +46,11 @@ function defaultConfig(env = process.env) {
     permission_mode: env.SICLI_PERMISSION_MODE || 'partial_secure',
     temperature: 0.2,
     max_tool_turns: 8,
+    max_tool_turns_autonomous: 50,
     max_history_messages: 20,
     self_improve_background: true,
-    self_improve_review_every: 1
+    self_improve_review_every: 1,
+    ask_gate_enabled: false
   };
 }
 
@@ -82,9 +84,11 @@ function normalizeConfig(config) {
   if (!PERMISSION_MODES.has(merged.permission_mode)) throw new Error(`config.permission_mode must be one of ${Array.from(PERMISSION_MODES).join(', ')}`);
   if (typeof merged.temperature !== 'number') throw new Error('config.temperature must be number');
   if (!Number.isInteger(merged.max_tool_turns) || merged.max_tool_turns < 1) throw new Error('config.max_tool_turns must be positive integer');
+  if (!Number.isInteger(merged.max_tool_turns_autonomous) || merged.max_tool_turns_autonomous < 1) throw new Error('config.max_tool_turns_autonomous must be positive integer');
   if (!Number.isInteger(merged.max_history_messages) || merged.max_history_messages < 1) throw new Error('config.max_history_messages must be positive integer');
   if (typeof merged.self_improve_background !== 'boolean') throw new Error('config.self_improve_background must be boolean');
   if (!Number.isInteger(merged.self_improve_review_every) || merged.self_improve_review_every < 1) throw new Error('config.self_improve_review_every must be positive integer');
+  if (typeof merged.ask_gate_enabled !== 'boolean') throw new Error('config.ask_gate_enabled must be boolean');
   return merged;
 }
 

@@ -84,7 +84,17 @@ function validProfile(growth) {
     rules: [],
     tool_policy: {},
     memory: { user_preferences: [], project_facts: [], lessons: [] },
-    growth: { requires_eval: true, max_patch_ops: 3, rollback: true, ...growth }
+    growth: { requires_eval: true, max_patch_ops: 3, rollback: true, ...growth },
+    harness: {
+      max_tool_turns: 8,
+      max_tool_turns_autonomous: 50,
+      max_history_messages: 20,
+      compact_tool_results: true,
+      compact_limit: 12000,
+      context_strategy: 'full',
+      failure_recovery: { retry_on_tool_error: false, max_retries: 0, switch_tool_after_2_failures: false },
+      safety_review: { enabled: false }
+    }
   };
   validateProfile(profile);
   return profile;
