@@ -40,6 +40,7 @@
     "compact_tool_results": true,
     "compact_limit": 12000,
     "context_strategy": "full",
+    "autonomous_mode": false,
     "failure_recovery": {
       "retry_on_tool_error": false,
       "max_retries": 0,

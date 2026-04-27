@@ -2,7 +2,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
-const { validateAskUserArgs, deterministicPolicy, DeferredQuestionsQueue } = require('../src/ask_gate');
+const { validateAskUserArgs, deterministicPolicy, DeferredQuestionsQueue, reviewQuestion } = require('../src/ask_gate');
 
 describe('agent autonomous mode', () => {
   it('deterministic policy rejects obvious never-ask patterns', () => {
@@ -39,5 +39,15 @@ describe('agent autonomous mode', () => {
     assert.ok(report.includes('Q1'));
     assert.ok(report.includes('Q2'));
     assert.ok(report.includes('file_delete'));
+  });
+
+  it('reviewQuestion is exported as a function', () => {
+    assert.strictEqual(typeof reviewQuestion, 'function');
+  });
+
+  it('DeferredQuestionsQueue defaults to budget 5', () => {
+    const q = new DeferredQuestionsQueue();
+    assert.strictEqual(q.maxDeferred, 5);
+    assert.strictEqual(q.isAtBudget(), false);
   });
 });

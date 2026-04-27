@@ -55,6 +55,7 @@ function validateProfile(profile, label = 'profile') {
   if (typeof profile.harness.failure_recovery.switch_tool_after_2_failures !== 'boolean') throw new Error(`${label}.harness.failure_recovery.switch_tool_after_2_failures must be boolean`);
   if (!isPlainObject(profile.harness.safety_review)) throw new Error(`${label}.harness.safety_review must be an object`);
   if (typeof profile.harness.safety_review.enabled !== 'boolean') throw new Error(`${label}.harness.safety_review.enabled must be boolean`);
+  if (typeof profile.harness.autonomous_mode !== 'boolean') throw new Error(`${label}.harness.autonomous_mode must be boolean`);
   return true;
 }
 

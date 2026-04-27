@@ -92,6 +92,7 @@ function validProfile(growth) {
       compact_tool_results: true,
       compact_limit: 12000,
       context_strategy: 'full',
+      autonomous_mode: false,
       failure_recovery: { retry_on_tool_error: false, max_retries: 0, switch_tool_after_2_failures: false },
       safety_review: { enabled: false }
     }

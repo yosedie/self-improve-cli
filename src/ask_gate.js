@@ -30,6 +30,10 @@ const ALWAYS_REVIEW_TYPES = new Set([
   'permission'
 ]);
 
+const REVIEW_IF_BLOCKING_TYPES = new Set([
+  'permission'
+]);
+
 function validateAskUserArgs(args) {
   if (!args || typeof args !== 'object') throw new Error('ask_user args must be an object');
   const question = String(args.question || '').trim();
@@ -55,6 +59,10 @@ function deterministicPolicy(candidate) {
     }
   }
 
+  if (REVIEW_IF_BLOCKING_TYPES.has(riskType) && blocking) {
+    return { action: 'review', reason: `risk_type=${riskType} blocking question requires clean-context review` };
+  }
+
   if (ALWAYS_REVIEW_TYPES.has(riskType)) {
     if (blocking) {
       return { action: 'reject', reason: `risk_type=${riskType} is high-risk; use safe_default and continue` };
@@ -70,8 +78,9 @@ function deterministicPolicy(candidate) {
 }
 
 class DeferredQuestionsQueue {
-  constructor() {
+  constructor({ maxDeferred = 5 } = {}) {
     this.questions = [];
+    this.maxDeferred = maxDeferred;
   }
 
   push(q) {
@@ -84,6 +93,10 @@ class DeferredQuestionsQueue {
 
   hasBlocking() {
     return this.questions.some(q => q.blocking);
+  }
+
+  isAtBudget() {
+    return this.questions.length >= this.maxDeferred;
   }
 
   toReport() {
@@ -102,9 +115,66 @@ class DeferredQuestionsQueue {
   }
 }
 
+function stripThinkBlocks(text) {
+  return String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+}
+
+async function reviewQuestion(root, config, originalPrompt, candidate, options = {}) {
+  const reviewPrompt = `You are reviewing a question that an AI coding agent wants to ask the user.
+Original task prompt: ${originalPrompt}
+Candidate question: ${candidate.question}
+Reason given by agent: ${candidate.reason}
+Risk type: ${candidate.risk_type}
+Files affected: ${candidate.files.join(', ') || 'none'}
+Safe default if rejected: ${candidate.safe_default}
+
+Should the agent ask this question, or should it proceed with the safe default?
+Reply with JSON only: {"approved": boolean, "reason": string}`;
+
+  // Try mmx-cli subagent first
+  try {
+    const { execSync } = require('node:child_process');
+    const os = require('node:os');
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const tmpFile = path.join(os.tmpdir(), `sicli-review-${Date.now()}.json`);
+    fs.writeFileSync(tmpFile, JSON.stringify([
+      { role: 'system', content: 'You are a strict gatekeeper. Only return JSON.' },
+      { role: 'user', content: reviewPrompt }
+    ]));
+    const stdout = execSync(
+      `npx mmx text chat --messages-file "${tmpFile.replace(/"/g, '\\"')}" --output json --quiet --non-interactive`,
+      { encoding: 'utf8', timeout: 15000, windowsHide: true }
+    );
+    try { fs.unlinkSync(tmpFile); } catch {}
+    const parsed = JSON.parse(stdout);
+    const text = parsed.content || parsed.text || parsed.message?.content || '';
+    const cleaned = stripThinkBlocks(text).replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
+    const result = JSON.parse(cleaned);
+    return { approved: Boolean(result.approved), reason: String(result.reason || 'mmx review') };
+  } catch {
+    // fall through to chatCompletion
+  }
+
+  // Fallback to chatCompletion
+  try {
+    const { chatCompletion } = require('./provider');
+    const review = await chatCompletion(root, config, [
+      { role: 'system', content: 'You are a strict gatekeeper. Only return JSON.' },
+      { role: 'user', content: reviewPrompt }
+    ], [], options.signal);
+    const text = stripThinkBlocks(review.message?.content || '').replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
+    const result = JSON.parse(text);
+    return { approved: Boolean(result.approved), reason: String(result.reason || 'chatCompletion review') };
+  } catch (error) {
+    return { approved: false, reason: `review failed: ${error.message}` };
+  }
+}
+
 module.exports = {
   RISK_TYPES,
   validateAskUserArgs,
   deterministicPolicy,
-  DeferredQuestionsQueue
+  DeferredQuestionsQueue,
+  reviewQuestion
 };

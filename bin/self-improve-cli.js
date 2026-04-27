@@ -156,7 +156,7 @@ async function main() {
     process.on('SIGINT', onSignal);
     try {
       const result = await runAgentTask(root, prompt, { interactive: false, yes: Boolean(flags.yes), trace: Boolean(flags.trace), signal: controller.signal, autonomous: isAutonomous });
-      if (isAutonomous) {
+      if (result.autonomous) {
         process.stdout.write(`Status: ${result.status}\n`);
         if (result.deferredQuestions && result.deferredQuestions.length) {
           process.stdout.write(`Deferred questions: ${result.deferredQuestions.length}\n`);

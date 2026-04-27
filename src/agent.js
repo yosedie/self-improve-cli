@@ -10,7 +10,7 @@ const { chatCompletion } = require('./provider');
 const { setProviderApiKey, hasProviderApiKey, secretStatus } = require('./secrets');
 const { readFileTool, searchTool, runCommandTool, writeFileTool, editFileTool } = require('./tools');
 const { learnFromMessage, runDemo, runBackgroundReview, recordTaskTrace, scheduleBackgroundReview } = require('./self-improve');
-const { validateAskUserArgs, deterministicPolicy, DeferredQuestionsQueue } = require('./ask_gate');
+const { validateAskUserArgs, deterministicPolicy, DeferredQuestionsQueue, reviewQuestion } = require('./ask_gate');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -113,6 +113,22 @@ const TOOL_SCHEMAS = [
         additionalProperties: false
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'task_complete',
+      description: 'Signal that the current task is finished. Provide a summary of what was accomplished.',
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: { type: 'string', description: 'Concise summary of completed work' },
+          verification_status: { type: 'string', enum: ['passed', 'failed', 'skipped', 'pending'], description: 'Status of any verification performed' }
+        },
+        required: ['summary'],
+        additionalProperties: false
+      }
+    }
   }
 ];
 
@@ -122,7 +138,8 @@ const TOOL_POLICY_KEYS = {
   run_command: 'run_command',
   write_file: 'write_file',
   edit_file: 'edit_file',
-  ask_user: 'ask_user'
+  ask_user: 'ask_user',
+  task_complete: 'task_complete'
 };
 
 function compactJson(value, limit = 12000) {
@@ -314,22 +331,23 @@ async function recordSelfImprove(root, active, event, options = {}) {
 async function runAgentTask(root, prompt, options = {}) {
   const { active } = await loadProfiles(root);
   const config = await loadConfig(root);
+  const isAutonomous = Boolean(options.autonomous) || Boolean(active.harness?.autonomous_mode);
   let systemContent = systemPrompt(active);
-  if (options.autonomous) {
-    systemContent += '\n\nYou are in autonomous mode. Continue working by default. Do not ask the user unnecessary questions. If you genuinely need user authority, use the ask_user tool. Otherwise, make reasonable decisions and keep going.';
+  if (isAutonomous) {
+    systemContent += '\n\nYou are in autonomous mode. Continue working by default. Do not ask the user unnecessary questions. If you genuinely need user authority, use the ask_user tool. When finished, use task_complete. Otherwise, make reasonable decisions and keep going.';
   }
   const messages = [
     { role: 'system', content: systemContent },
     ...(options.history || []),
     { role: 'user', content: prompt }
   ];
-  const maxTurns = options.autonomous
+  const maxTurns = isAutonomous
     ? (options.maxTurns || active.harness?.max_tool_turns_autonomous || config.max_tool_turns_autonomous)
     : (options.maxTurns || active.harness?.max_tool_turns || config.max_tool_turns);
   const started = Date.now();
   const trace = { prompt, tools: [] };
   let loggedToolFailure = false;
-  const deferredQueue = options.autonomous ? new DeferredQuestionsQueue() : null;
+  const deferredQueue = isAutonomous ? new DeferredQuestionsQueue() : null;
   let status = 'running';
   for (let turn = 0; turn < maxTurns; turn += 1) {
     const requestMessages = trimHistory(messages, (active.harness?.max_history_messages ?? config.max_history_messages) + 1);
@@ -338,14 +356,14 @@ async function runAgentTask(root, prompt, options = {}) {
     const toolCalls = assistant.tool_calls || [];
     if (!toolCalls.length) {
       const text = stripThinkBlocks(assistant.content);
-      trace.autonomous = Boolean(options.autonomous);
+      trace.autonomous = isAutonomous;
       trace.status = 'completed';
       if (deferredQueue) {
         trace.deferred_questions = deferredQueue.getAll();
       }
       await recordTaskTrace(root, { ...trace, final_text: text, duration_ms: Date.now() - started });
       await scheduleBackgroundReview(root);
-      const result = { text, messages, status: 'completed' };
+      const result = { text, messages, status: 'completed', autonomous: isAutonomous };
       if (deferredQueue) {
         result.deferredQuestions = deferredQueue.getAll();
         if (options.interactive) process.stdout.write(deferredQueue.toReport());
@@ -356,20 +374,72 @@ async function runAgentTask(root, prompt, options = {}) {
       let result;
       const name = toolCallName(toolCall);
       try {
-        if (name === 'ask_user' && options.autonomous) {
+        if (name === 'task_complete') {
+          const args = parseToolArgs(toolCall);
+          const summary = String(args.summary || '');
+          const verificationStatus = String(args.verification_status || 'pending');
+          result = { ok: true, result: { task_complete: true, summary, verification_status: verificationStatus } };
+          trace.tools.push({
+            name,
+            args: safeToolArgs(toolCall),
+            raw_args: parseToolArgs(toolCall),
+            raw_response: result,
+            compact_args: compactJson(parseToolArgs(toolCall), 800),
+            ok: result.ok,
+            error: '',
+            summary: `completed (${verificationStatus})`
+          });
+          if (options.interactive) {
+            process.stdout.write(`${result.ok ? '✓' : '✗'} ${name} ${summarizeToolResult(result)}\n`);
+          }
+          messages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: compactJson(result)
+          });
+          trace.autonomous = isAutonomous;
+          trace.status = 'completed';
+          trace.task_complete = { summary, verification_status: verificationStatus };
+          if (deferredQueue) trace.deferred_questions = deferredQueue.getAll();
+          await recordTaskTrace(root, { ...trace, final_text: summary, duration_ms: Date.now() - started });
+          await scheduleBackgroundReview(root);
+          const completionResult = { text: summary, messages, status: 'completed', autonomous: isAutonomous, verificationStatus };
+          if (deferredQueue) {
+            completionResult.deferredQuestions = deferredQueue.getAll();
+            if (options.interactive) process.stdout.write(deferredQueue.toReport());
+          }
+          return completionResult;
+        }
+
+        if (name === 'ask_user' && isAutonomous) {
           const candidate = validateAskUserArgs(parseToolArgs(toolCall));
-          const decision = deterministicPolicy(candidate);
+          let decision = deterministicPolicy(candidate);
+
+          if (decision.action === 'defer' && deferredQueue && deferredQueue.isAtBudget()) {
+            decision = { action: 'reject', reason: `deferred question budget exhausted (${deferredQueue.maxDeferred}); using safe_default` };
+          }
+
           if (decision.action === 'approve') {
             result = { ok: true, result: { gate: 'approved', answer: 'User has approved this question via gate.' } };
+          } else if (decision.action === 'review') {
+            const reviewResult = await reviewQuestion(root, config, prompt, candidate, options);
+            if (reviewResult.approved) {
+              result = { ok: true, result: { gate: 'review_approved', answer: reviewResult.reason || 'Reviewer approved.' } };
+            } else {
+              result = { ok: true, result: { gate: 'review_rejected', safe_default: candidate.safe_default, reason: reviewResult.reason } };
+              if (candidate.blocking) status = 'blocked';
+            }
           } else {
-            result = { ok: true, result: { gate: decision.action, safe_default: candidate.safe_default } };
-            deferredQueue.push({ turn, question: candidate.question, reason: candidate.reason, risk_type: candidate.risk_type, files: candidate.files, safe_default: candidate.safe_default, blocking: candidate.blocking, tool_call_id: toolCall.id });
+            result = { ok: true, result: { gate: decision.action, safe_default: candidate.safe_default, reason: decision.reason } };
+            if (decision.action === 'defer') {
+              deferredQueue.push({ turn, question: candidate.question, reason: candidate.reason, risk_type: candidate.risk_type, files: candidate.files, safe_default: candidate.safe_default, blocking: candidate.blocking, tool_call_id: toolCall.id });
+            }
             if (candidate.blocking && decision.action === 'reject') {
               status = 'blocked';
             }
           }
-        } else if (name === 'ask_user' && !options.autonomous) {
-          result = { ok: false, error: 'ask_user tool requires autonomous mode. Run with --dont-ask or set autonomous: true.' };
+        } else if (name === 'ask_user' && !isAutonomous) {
+          result = { ok: false, error: 'ask_user tool requires autonomous mode. Run with --dont-ask or set harness.autonomous_mode true.' };
         } else {
           result = normalizeToolExecution(name, await executeTool(root, active, toolCall, { ...options, root, config }));
         }
@@ -409,12 +479,12 @@ async function runAgentTask(root, prompt, options = {}) {
     message: `Stopped after max tool turns (${maxTurns}) for prompt "${prompt}"`
   }, options);
   const text = `Stopped after max tool turns (${maxTurns}). Self-improve logged this failure.`;
-  trace.autonomous = Boolean(options.autonomous);
+  trace.autonomous = isAutonomous;
   trace.status = 'max_turns';
   if (deferredQueue) trace.deferred_questions = deferredQueue.getAll();
   await recordTaskTrace(root, { ...trace, final_text: text, stopped_after_max_turns: true, duration_ms: Date.now() - started });
   await scheduleBackgroundReview(root);
-  const result = { text, messages, status: 'max_turns' };
+  const result = { text, messages, status: 'max_turns', autonomous: isAutonomous };
   if (deferredQueue) {
     result.deferredQuestions = deferredQueue.getAll();
     if (options.interactive) process.stdout.write(deferredQueue.toReport());

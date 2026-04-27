@@ -60,6 +60,16 @@ describe('deterministicPolicy', () => {
     const result = deterministicPolicy({ question: "What's next?", reason: 'R', risk_type: 'clarification', safe_default: 'skip', blocking: true, files: [] });
     assert.strictEqual(result.action, 'reject');
   });
+
+  it('returns review for permission + blocking', () => {
+    const result = deterministicPolicy({ question: 'Can I share this data?', reason: 'R', risk_type: 'permission', safe_default: 'deny', blocking: true, files: [] });
+    assert.strictEqual(result.action, 'review');
+  });
+
+  it('never_ask takes precedence over review', () => {
+    const result = deterministicPolicy({ question: 'Should I continue?', reason: 'R', risk_type: 'permission', safe_default: 'skip', blocking: true, files: [] });
+    assert.strictEqual(result.action, 'reject');
+  });
 });
 
 describe('DeferredQuestionsQueue', () => {
@@ -78,5 +88,13 @@ describe('DeferredQuestionsQueue', () => {
     q.push({ turn: 1, question: 'Q1', reason: 'R1', risk_type: 'clarification', files: [], safe_default: 'skip', blocking: false, tool_call_id: 'tc1' });
     q.push({ turn: 2, question: 'Q2', reason: 'R2', risk_type: 'permission', files: [], safe_default: 'deny', blocking: true, tool_call_id: 'tc2' });
     assert.strictEqual(q.hasBlocking(), true);
+  });
+
+  it('enforces max deferred budget', () => {
+    const q = new DeferredQuestionsQueue({ maxDeferred: 2 });
+    q.push({ turn: 1, question: 'Q1', reason: 'R1', risk_type: 'clarification', files: [], safe_default: 'skip', blocking: false, tool_call_id: 'tc1' });
+    q.push({ turn: 2, question: 'Q2', reason: 'R2', risk_type: 'clarification', files: [], safe_default: 'skip', blocking: false, tool_call_id: 'tc2' });
+    assert.strictEqual(q.isAtBudget(), true);
+    assert.strictEqual(q.getAll().length, 2);
   });
 });
