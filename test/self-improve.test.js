@@ -16,7 +16,7 @@ test('traceFailureMessages detects max turns and shell file creation misuse', ()
     prompt: 'make file',
     stopped_after_max_turns: true,
     tools: [
-      { name: 'run_command', args: { command: 'cmd', args: ['/c', 'echo hi > hello.md'] }, ok: true }
+      { name: 'run_command', raw_args: { command: 'cmd', args: ['/c', 'echo hi > hello.md'] }, ok: true }
     ]
   });
   assert.equal(messages.length, 2);
@@ -36,7 +36,7 @@ test('runBackgroundReview converts task traces into patch audits', async () => {
   const root = await tempRoot();
   await recordTaskTrace(root, {
     prompt: 'make file',
-    tools: [{ name: 'run_command', args: { command: 'cmd', args: ['/c', 'echo hi > hello.md'] }, ok: true }],
+    tools: [{ name: 'run_command', raw_args: { command: 'cmd', args: ['/c', 'echo hi > hello.md'] }, ok: true }],
     final_text: 'done'
   });
   const result = await runBackgroundReview(root);

@@ -26,10 +26,12 @@ function parseSkillFrontmatter(content) {
   if (!content || !content.startsWith('---')) {
     return null;
   }
-  const endIdx = content.indexOf('---', 3);
-  if (endIdx === -1) return null;
+  // Match closing --- on its own line (with optional whitespace)
+  const endMatch = content.match(/\r?\n---\s*(?:\r?\n|$)/);
+  if (!endMatch) return null;
+  const endIdx = endMatch.index;
   const yaml = content.slice(3, endIdx).trim();
-  const body = content.slice(endIdx + 3).trim();
+  const body = content.slice(endIdx + endMatch[0].length).trim();
   const frontmatter = {};
   for (const line of yaml.split('\n')) {
     const colonIdx = line.indexOf(':');
@@ -65,7 +67,7 @@ async function discoverSkills(projectRoot) {
         if (!parsed || !parsed.name) continue;
         if (!SKILL_NAME_RE.test(parsed.name)) continue;
         if (parsed.name.length > 64) continue;
-        seen.add(entry.name);
+        seen.add(parsed.name);
         results.push({
           name: parsed.name,
           description: parsed.description,
@@ -79,7 +81,7 @@ async function discoverSkills(projectRoot) {
   return results;
 }
 
-async function loadSkill(skillDir) {
+async function loadSkill(skillDir, projectRoot) {
   const skillMd = await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf8');
   const parsed = parseSkillFrontmatter(skillMd);
   if (!parsed) throw new Error(`Invalid SKILL.md in ${skillDir}`);
@@ -100,10 +102,18 @@ async function loadSkill(skillDir) {
     }
   } catch {}
 
+  // Security: only load handlers.js from project-local skills directories
+  const isLocal = projectRoot && skillDir.toLowerCase().startsWith(path.resolve(projectRoot).toLowerCase());
   const handlersPath = path.join(skillDir, 'handlers.js');
   try {
-    const rawHandlers = require(handlersPath);
-    result.handlers = prefixHandlers(parsed.name, rawHandlers);
+    if (isLocal) {
+      const rawHandlers = require(handlersPath);
+      result.handlers = prefixHandlers(parsed.name, rawHandlers);
+    } else {
+      // Check if handlers.js exists to warn user
+      await fs.access(handlersPath);
+      process.stderr.write(`skills: skipping handlers.js for global skill "${parsed.name}" (security: only project-local skills may provide handlers)\n`);
+    }
   } catch {}
 
   return result;
@@ -170,7 +180,7 @@ async function getSkillTools(root, activeNames) {
     const skill = discovered.find(s => s.name === name);
     if (!skill) continue;
     try {
-      const loaded = await loadSkill(skill.dir);
+      const loaded = await loadSkill(skill.dir, root);
       schemas.push(...loaded.tools);
       Object.assign(handlers, loaded.handlers);
     } catch {

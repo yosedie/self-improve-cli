@@ -114,3 +114,20 @@ Implemented:
 - Modified `bin/self-improve-cli.js` — mcp add/remove/list, skills list/enable/disable CLI subcommands
 
 Tests: 74/76 pass (19 new tests, 2 pre-existing failures). No regressions.
+
+## [2026-04-28] fix | P0 bug fixes + spec status cleanup
+
+Fixed critical bugs:
+- `src/skills.js` `parseSkillFrontmatter` — closing `---` now matched on own line only (was matching `---` anywhere in body)
+- `src/skills.js` `discoverSkills` — dedup now uses parsed skill `name` not directory `entry.name`
+- `src/skills.js` `loadSkill` — handlers.js only loaded from project-local dirs; global skills with handlers.js get security warning
+- `src/agent.js` `/mcp reload` — implemented actual reconnect (loads config, creates MCPManager, discovers, prints status, cleans up)
+- `.gitignore` — added `session-*.md` and `pi-session-*.html` to prevent accidental commit of session data
+- `test/self-improve.test.js` — fixed 2 failing tests: test data used `args`, implementation reads `raw_args`
+- `test/mcp-skills.test.js` — added test for `---` inside body frontmatter edge case
+
+Spec status updates (all 11 specs):
+- 001-007: `IMPLEMENTED` → `COMPLETED`
+- 008-011: `DRAFT` → `COMPLETED`
+
+Result: 77/77 tests pass, 0 failures, 0 regressions.

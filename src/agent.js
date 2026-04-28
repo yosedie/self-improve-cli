@@ -919,7 +919,30 @@ async function handleMCPCommand(root, arg) {
     return true;
   }
   if (sub === 'reload') {
-    process.stdout.write('MCP servers will reload on next task. Restart chat for immediate effect.\n');
+    const config = await loadMcpConfig(root);
+    const servers = config.mcpServers || {};
+    const names = Object.keys(servers);
+    if (!names.length) {
+      process.stdout.write('No MCP servers configured.\n');
+      return true;
+    }
+    const { MCPManager } = require('./mcp-client');
+    const manager = new MCPManager(root, config);
+    try {
+      await manager.discover();
+      for (const name of names) {
+        const status = manager.getStatus(name);
+        if (status.connected) {
+          process.stdout.write(`  + ${name} (${status.toolCount} tools)\n`);
+        } else {
+          process.stdout.write(`  x ${name} (not connected)\n`);
+        }
+      }
+    } catch (err) {
+      process.stdout.write(`Reload failed: ${err.message}\n`);
+    } finally {
+      await manager.shutdown().catch(() => {});
+    }
     return true;
   }
   process.stdout.write('Usage: /mcp [add|remove|list|reload]\n');

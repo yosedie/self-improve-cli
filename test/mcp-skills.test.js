@@ -66,6 +66,13 @@ describe('parseSkillFrontmatter', () => {
     assert.equal(result.name, 'my-skill');
     assert.equal(result.description, 'quoted desc');
   });
+
+  it('ignores --- inside body', () => {
+    const content = '---\nname: test-skill\n---\nSome text\n---\nMore text';
+    const result = parseSkillFrontmatter(content);
+    assert.equal(result.name, 'test-skill');
+    assert.equal(result.body, 'Some text\n---\nMore text');
+  });
 });
 
 describe('prefixToolSchema', () => {

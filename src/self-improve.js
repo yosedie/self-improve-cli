@@ -235,7 +235,8 @@ function traceFailureMessages(trace) {
   if (trace.stopped_after_max_turns) messages.push(`Stopped after max tool turns for prompt "${trace.prompt}"`);
   for (const tool of trace.tools || []) {
     if (tool.ok === false) messages.push(`${tool.name} failed during prompt "${trace.prompt}": ${tool.error || 'unknown error'}`);
-    if (tool.name === 'run_command' && /[><|]|cat|printf|echo/.test(String(tool.raw_args?.command || tool.raw_args?.args || ''))) {
+    const cmdParts = [tool.raw_args?.command, ...(Array.isArray(tool.raw_args?.args) ? tool.raw_args.args : [])];
+    if (tool.name === 'run_command' && /[><|]|cat|printf|echo/.test(cmdParts.join(' '))) {
       messages.push(`agent used run_command shell redirection for file creation during prompt "${trace.prompt}"`);
     }
   }
