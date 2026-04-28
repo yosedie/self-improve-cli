@@ -1,230 +1,271 @@
 # self-improve-cli
 
-A minimal, cross-platform starter repo for building a lightweight self-improving agentic coding CLI.
+A lightweight, cross-platform agentic coding CLI with self-improving harness, multi-agent swarm orchestration, autonomous mode, and a don't-ask gate. Zero external AI dependencies for core behavior — LLM optional.
 
-The MVP keeps model/provider work optional and improves the surrounding behavior first:
-- JSON profile rules
-- tool policy
-- durable memory/lessons
-- growth gates
-- event and patch audit logs
+## Design Goals
 
-## Design goals
-- Plain JavaScript only
-- No Bash, PowerShell, or AppleScript in the core loop
-- Works on Linux, macOS, and Windows
-- Manual by default
-- Optional auto-apply only when profile growth policy allows it
-- Low memory: no Electron, no default indexer, no LSP/embeddings/watchers by default
+- Plain JavaScript. No transpilers, no Electron, no LSP, no watchers.
+- Works on Linux, macOS, Windows.
+- Manual by default; auto-apply only when growth policy allows.
+- Low memory. `.selfimprove/` state dir, no external DB.
+- All LLM features optional — CLI works without any API key.
 
-## What this runs
+## Architecture Overview
 
-Current MVP can run an interactive coding chat loop, call local tools, and record observed failures into `.selfimprove/events.jsonl`. Tests validate profile, config, and tool behavior.
+```
+sicli
+├── Chat (interactive / one-shot)
+│   ├── Agent loop (runAgentTask)
+│   ├── Autonomous mode (--dont-ask / harness config)
+│   │   ├── Don't Ask Gate (ask_user tool)
+│   │   │   ├── deterministicPolicy (never_ask patterns + risk_types)
+│   │   │   ├── reviewQuestion (mmx-cli / chatCompletion fallback)
+│   │   │   └── DeferredQuestionsQueue (max 5 budget)
+│   │   ├── task_complete (self-declare done)
+│   │   └── delegate_swarm (auto-delegate complex tasks)
+│   └── Slash commands (/connect, /swarm, /self-improve, ...)
+├── CLI commands
+│   ├── config (show / get / set)
+│   ├── permissions (secure / partial_secure / ai_reviewed / auto_approve)
+│   ├── profile (compile, prompt, patch)
+│   ├── growth (none / low / medium / high / very_high)
+│   ├── self-improve (status / demo / learn / background-run / propose / promote / sandbox-eval)
+│   ├── swarm (decompose → execute → critic → merge)
+│   ├── daemon (start / stop / status / logs)
+│   ├── tool (read / search / run / write / edit)
+│   └── observe / improve / apply-patch
+└── Background daemon
+    ├── Event-driven (new traces trigger evaluation)
+    ├── Interval-driven (every N minutes)
+    └── HTTP API (localhost:3847 — /status, /candidates, /trigger, /stop)
+```
 
-## Files
-- `AGENTS.md` project rules for agents working in this repo
-- `bin/self-improve-cli.js` zero-dependency CLI entrypoint
-- `src/profile.js` profile validation, prompt compilation, JSON patch, growth gates
-- `src/state.js` `.selfimprove/` state, event log, patch audit, overlay mutation
-- `src/config.js` provider/model config in `.selfimprove/config.json`
-- `src/provider.js` OpenAI-compatible Chat Completions client
-- `src/agent.js` chat loop and tool-call dispatcher
-- `src/tools.js` lightweight file read, search, command, and exact edit tools
-- `profiles/default.profile.json` immutable default profile template
-- `test/profile.test.js` built-in Node tests
-- `spec-driven-llm-wiki/` spec-driven project memory
+## File Map
 
-## Manual use
-From the repo root:
+| File | Purpose |
+|------|---------|
+| `bin/self-improve-cli.js` | CLI entrypoint. Dispatches all commands. |
+| `src/agent.js` | Agent loop, tool schemas, chat mode, slash commands, `runAgentTask` |
+| `src/orchestrator.js` | Swarm orchestrator: `planFeatures`, `runFeatureAgent`, `runCritic`, `mergeResults` |
+| `src/ask_gate.js` | Don't Ask Gate: `validateAskUserArgs`, `deterministicPolicy`, `DeferredQuestionsQueue`, `reviewQuestion` |
+| `src/mmx-tools.js` | mmx-cli tool wrappers: `MMX_TOOL_SCHEMAS`, `MMX_TOOL_HANDLERS` |
+| `src/provider.js` | OpenAI-compatible chat completion with 30s timeout |
+| `src/config.js` | Config load/save, provider presets, permission modes |
+| `src/profile.js` | Profile validation, JSON patch, growth gates, prompt compilation |
+| `src/state.js` | `.selfimprove/` state, event/trace/patch logs, candidates, daemon state |
+| `src/self-improve.js` | Self-improvement engine: diagnose, propose, critic, sandbox eval, pareto, background review |
+| `src/daemon.js` | Background daemon loop with HTTP API |
+| `src/tools.js` | Tool implementations: read, write, edit, search, run-command (shell=false) |
+| `src/secrets.js` | API key secure storage with file permissions |
+| `profiles/default.profile.json` | Immutable default harness profile |
+| `test/*.test.js` | 57 built-in Node tests (55 pass, 2 pre-existing failures) |
+
+## Quick Start
 
 ```bash
+# No API key needed
 npm test
 node bin/self-improve-cli.js init
 node bin/self-improve-cli.js status
 node bin/self-improve-cli.js config show
 node bin/self-improve-cli.js profile --prompt
-node bin/self-improve-cli.js improve --type failure --message "edited file without reading context first"
-node bin/self-improve-cli.js improve --type failure --message "edited file without reading context first" --apply
-node bin/self-improve-cli.js self-improve status
-node bin/self-improve-cli.js self-improve demo
-node bin/self-improve-cli.js self-improve demo --apply
-```
 
-Optional local install:
-
-```bash
+# Optional install
 npm link
 sicli status
 ```
 
-## Chat setup
+## Chat Mode
 
-Set provider config. API key stays in env; it is not written to config.
-
-```bash
-node bin/self-improve-cli.js config set model gpt-4o-mini
-node bin/self-improve-cli.js config set api_key_env OPENAI_API_KEY
-node bin/self-improve-cli.js config set base_url https://api.openai.com/v1
-```
-
-Start one-shot chat:
-
-```bash
-node bin/self-improve-cli.js chat "read README and summarize this project"
-```
-
-Start interactive chat:
-
+### Setup
 ```bash
 node bin/self-improve-cli.js chat
 # or after npm link:
 sicli
-```
 
-Inside chat, configure provider/model before first prompt. `/connect` asks for API key with hidden input and stores it in `.selfimprove/secrets.json`.
-
-```text
-sicli> /connect
+# Inside chat:
 sicli> /connect minimax
-API key for MiniMax Coding Plan (empty to skip): 
-sicli> /connect zai
-API key for Z.AI Coding Plan (empty to skip): 
+sicli> /models MiniMax-M2.7
 sicli> /key
-sicli> /models
-sicli> /models MiniMax-M2.7-highspeed
-sicli> /models GLM-5.1
-sicli> /permissions
-sicli> /permissions secure
-sicli> /permissions partial_secure
-sicli> /permissions ai_reviewed
-sicli> /permissions auto_approve
-sicli> /self-improve
-sicli> /self-improve enable
-sicli> /self-improve growth medium --auto-apply true
-sicli> /self-improve demo
-sicli> /self-improve demo --apply
-sicli> /self-improve learn agent repeated bad tool call --apply
-sicli> /config
 ```
 
-Built-in provider presets:
+### One-shot
+```bash
+node bin/self-improve-cli.js chat "read README and summarize" --yes
+node bin/self-improve-cli.js chat "refactor auth controller" --dont-ask
+```
 
-| Provider | Base URL | API key env | Models |
-| --- | --- | --- | --- |
-| OpenAI Compatible | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-4o-mini`, `gpt-4.1-mini`, `gpt-4.1` |
-| MiniMax Coding Plan | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | `MiniMax-M2.7`, `MiniMax-M2.7-highspeed` |
-| Z.AI Coding Plan | `https://api.z.ai/api/coding/paas/v4` | `ZAI_API_KEY` | `GLM-5.1`, `GLM-5`, `GLM-5-Turbo`, `GLM-4.7`, `GLM-4.5-air` |
+### Slash Commands
 
-Secret storage:
+| Command | Description |
+|---------|-------------|
+| `/connect [provider]` | Select provider (openai / minimax / zai) |
+| `/key` | Store API key with hidden input |
+| `/models [model]` | List or switch model |
+| `/permissions [mode]` | View or change permission mode |
+| `/self-improve [action]` | Self-improve status / enable / growth / demo / learn |
+| `/swarm <prompt> [--yes]` | Decompose prompt → parallel feature agents → critic review |
+| `/config` | Show full config |
+| `/help` | List commands |
+| `/exit` | Quit |
 
-- API keys are stored in `.selfimprove/secrets.json`, never `.selfimprove/config.json`.
-- `.selfimprove/` is gitignored.
-- CLI applies best-effort permissions: directory `0700`, secret file `0600`.
-- `/config` only shows `stored_api_key: true/false`, not the key.
-- Env vars still work as fallback, but are no longer required.
-
-File creation uses direct `write_file`, so the model should not use shell redirection like `cat > file` or `printf > file`.
-
-Permission modes:
+### Permission Modes
 
 | Mode | Behavior |
-| --- | --- |
-| `secure` | Ask before every tool call. |
-| `partial_secure` | Allow read/search and git-reversible file writes/edits; ask otherwise. Default. |
-| `ai_reviewed` | Clean-context model reviews action tools; asks user if rejected or review fails. Costs extra API calls. |
-| `auto_approve` | Autopilot: allow profile-permitted tools until completion. |
+|------|----------|
+| `secure` | Ask before every tool call |
+| `partial_secure` | Allow read/search and git-reversible writes/edits; ask otherwise |
+| `ai_reviewed` | Model reviews action tools; asks if rejected |
+| `auto_approve` | Autopilot: allow all profile-permitted tools |
 
-Set mode from CLI:
+## Autonomous Mode & Don't Ask Gate
+
+When activated (via `--dont-ask` flag or `harness.autonomous_mode: true`), the agent:
+
+1. **Continues by default** — no "should I continue?" interruptions
+2. **Gate reviews questions** — `ask_user` tool calls go through `deterministicPolicy`:
+   - `never_ask` patterns → **reject** (agent uses safe_default)
+   - `file_delete`/`command_exec`/`api_key` + blocking → **reject**
+   - `permission` + blocking → **review** (mmx-cli / chatCompletion)
+   - Non-blocking → **defer** (collected at end, max 5)
+3. **Deferred questions** displayed as report at task completion
+4. **Budget enforcement** — max 5 deferred; beyond that auto-rejected
+5. **task_complete tool** — agent self-declares done
 
 ```bash
-node bin/self-improve-cli.js permissions secure
-node bin/self-improve-cli.js permissions auto_approve
+# Activate autonomous
+sicli chat "implement checkout flow high quality" --dont-ask
 ```
 
-Commands that need approval by current permission mode ask interactively unless `--yes` is set:
+### Deferred Questions Output
+```
+--- Deferred Questions ---
+1. Should I add coupon support?
+   Reason: optional enhancement
+   Risk: clarification | Blocking: false
+   Safe default: skip for now
+--- End Deferred Questions ---
+```
 
+## Swarm Orchestrator (Multi-Layer Subagents)
+
+Decompose complex prompts into parallel features, each with its own agent + critic.
+
+### CLI
 ```bash
-node bin/self-improve-cli.js chat --yes "run tests and report result"
+# Preview decomposition
+sicli swarm --plan-only "implement auth, logging, and rate limiting"
+
+# Execute with parallel feature agents
+sicli swarm --concurrency 3 "refactor all controllers"
+
+# Allow critic retry loops
+sicli swarm --max-critic-iterations 2 "implement payment flow"
+
+# Interactive confirmation in chat
+sicli> /swarm implement auth, logging, and caching
 ```
 
-## Self-improve flow
+### Architecture
+```
+User Prompt
+  ↓
+Layer 1: Orchestrator (chatCompletion → planFeatures)
+  → [feature1, feature2, feature3]
+  ↓
+Layer 2: Promise.allSettled (batch, concurrency=3)
+  ├─ Feature Agent 1
+  │   ├─ Worker (runAgentTask + tools)
+  │   ├─ Critic (chatCompletion review)
+  │   └─ Retry loop (optional)
+  ├─ Feature Agent 2
+  └─ Feature Agent 3
+  ↓
+Layer 1: mergeResults → { summary, successful[], warnings[], failed[] }
+```
 
-Self-improve is background harness/profile evolution, not model fine-tuning.
+### Agentic trigger
+In autonomous mode, the agent can self-delegate complex tasks using `delegate_swarm` tool.
 
-```text
+## Self-Improve Pipeline
+
+Background profile/harness evolution, not model fine-tuning.
+
+```
 each chat task
 → append trace to .selfimprove/traces.jsonl
-→ background reviewer scans new traces
-→ failures become .selfimprove/events.jsonl
-→ proposed JSON patch
-→ .selfimprove/patches.jsonl audit
-→ optional apply into .selfimprove/overlay.profile.json
-→ future prompts use new profile rules/memory
+→ scheduleBackgroundReview
+→ runBackgroundReview scans new traces
+→ failures become events.jsonl
+→ diagnoseFailures (mmx-cli → chatCompletion → static)
+→ buildHarnessPatch (mmx-cli → chatCompletion → static)
+→ sandboxEvaluateCandidate (WorkerPool sim)
+→ criticEvaluate (mmx-cli → chatCompletion → fallback)
+→ computeParetoFrontier (dominance filter)
+→ promoteCandidate (optional auto)
 ```
 
-It does not block the main chat flow. The background reviewer runs after tasks when `self_improve_background=true`.
-
-Try it without API key:
-
 ```bash
+# Manual
 node bin/self-improve-cli.js self-improve status
 node bin/self-improve-cli.js self-improve demo
-node bin/self-improve-cli.js self-improve demo --apply
 node bin/self-improve-cli.js self-improve background-run
-node bin/self-improve-cli.js profile --prompt
-```
+node bin/self-improve-cli.js self-improve propose
+node bin/self-improve-cli.js self-improve candidates
 
-Config knobs:
-
-```bash
+# Config
 node bin/self-improve-cli.js config set self_improve_background true
 node bin/self-improve-cli.js config set self_improve_review_every 1
-```
-
-Enable automatic profile patching after failures:
-
-```bash
 node bin/self-improve-cli.js growth medium --auto-apply true
 ```
 
-Inside chat:
+## Growth Policy
 
-```text
-sicli> /self-improve enable
-sicli> /self-improve
-sicli> /self-improve demo --apply
-```
+| Level | Auto-Apply | Patch Surface |
+|-------|------------|---------------|
+| none | — | Blocked |
+| low | manual | Rules, lessons |
+| medium | configurable | Rules, memory |
+| high | configurable | Rules, memory, style, tool_policy |
+| very_high | configurable | Rules, memory, style, tool_policy, growth (protected from self-escalation) |
 
-`/self-improve enable` sets:
+## Daemon Mode
 
-```txt
-self_improve_background=true
-self_improve_review_every=1
-growth=medium auto_apply=true
-```
-
-Active profile lives in `.selfimprove/base.profile.json` + `.selfimprove/overlay.profile.json`.
-
-## Growth policy
-
-
-- `none`: no profile mutation
-- `low`: propose only; human may apply safe patches
-- `medium`: can auto-apply safe rule/memory patches when `auto_apply=true`
-- `high`: can also patch style/tool policy
-- `very_high`: broader patch surface, still protected from self-escalating growth level
-
-Change local growth level:
+Background process for continuous self-improvement:
 
 ```bash
-node bin/self-improve-cli.js growth medium --auto-apply true
+sicli self-improve daemon start [--interval=15] [--port=3847]
+sicli self-improve daemon status
+sicli self-improve daemon stop
+sicli self-improve daemon logs --tail=50
 ```
 
-## Coding tools
+HTTP API at `http://localhost:3847`:
+- `GET /status` — daemon + evaluation state
+- `GET /candidates` — scored patch candidates
+- `POST /trigger` — force evaluation on next loop
+- `POST /stop` — graceful shutdown
+
+## mmx-cli Integration
+
+Optional MiniMax AI tools available to feature agents when profile allows:
+
+```json
+// .selfimprove/overlay.profile.json
+{ "tool_policy": { "mmx_search": "allow", "mmx_text_chat": "allow" } }
+```
+
+Requires `mmx-cli` installed globally:
+```bash
+npm install -g mmx-cli
+mmx auth login --api-key sk-xxxxx
+```
+
+## Coding Tools
 
 ```bash
 node bin/self-improve-cli.js tool read README.md
-node bin/self-improve-cli.js tool search profile .
+node bin/self-improve-cli.js tool search pattern [dir]
 node bin/self-improve-cli.js tool run npm test
 node bin/self-improve-cli.js tool write hello.md "# Hello"
 node bin/self-improve-cli.js tool edit README.md old_text new_text
@@ -232,5 +273,45 @@ node bin/self-improve-cli.js tool edit README.md old_text new_text
 
 `tool run` uses `child_process.spawn` with `shell: false`.
 
-## Notes for Windows
-This repo avoids platform-specific shell scripts and runs with Node.js on Windows, Linux, and macOS.
+## State Directory (`.selfimprove/`)
+
+| File | Description |
+|------|-------------|
+| `base.profile.json` | Immutable base profile (do not edit) |
+| `overlay.profile.json` | Mutable overlay profile (bak.0/1/2 backups) |
+| `config.json` | Provider/model/permission config |
+| `secrets.json` | Encrypted API keys |
+| `events.jsonl` | Observed events |
+| `traces.jsonl` | Task execution traces |
+| `patches.jsonl` | Profile patch audit log |
+| `optimizer.json` | Self-improve optimizer state |
+| `daemon.json` | Daemon runtime state |
+| `daemon.pid` | Daemon process ID |
+| `swarm/<run-id>/` | Swarm execution artifacts |
+| `candidates/<id>/` | Patch candidates (harness + scores) |
+
+All gitignored.
+
+## Provider Presets
+
+| Provider | Base URL | API Key Env | Models |
+|----------|----------|-------------|--------|
+| OpenAI | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-4o-mini`, `gpt-4.1-mini`, `gpt-4.1` |
+| MiniMax Coding Plan | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | `MiniMax-M2.7`, `MiniMax-M2.7-highspeed` |
+| Z.AI Coding Plan | `https://api.z.ai/api/coding/paas/v4` | `ZAI_API_KEY` | `GLM-5.1`, `GLM-5`, `GLM-5-Turbo`, `GLM-4.7`, `GLM-4.5-air` |
+
+## Test Suite
+
+```bash
+npm test
+```
+
+55/57 pass. 2 pre-existing failures in `test/self-improve.test.js` (trace assertion mismatch, unrelated).
+
+## Windows Compatibility
+
+All platform-specific shell scripts avoided. Uses Node.js built-ins (`fs`, `path`, `child_process.spawn` with `shell=false`). Tested on Windows, Linux, macOS.
+
+## Spec-Driven LLM Wiki
+
+See `spec-driven-llm-wiki/` for: numbered specs, wiki, graph, templates, tools, and handoffs — a portable spec-driven development memory system.
