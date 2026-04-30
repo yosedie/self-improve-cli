@@ -124,7 +124,7 @@ async function handleConnectCommand(root, arg, rl) {
       rest.push(part);
     }
   }
-  const selection = rest.join(' ');
+  let selection = rest.join(' ');
 
   // Handle custom provider with --base-url
   if (selection.toLowerCase() === 'custom' || flags['base-url'] || flags['base_url']) {
@@ -518,28 +518,22 @@ async function startChat(root, options = {}, { runAgentTask } = {}) {
     return input || '';
   }
 
-  // Helper to detect clipboard image (Windows)
+  // Helper to detect clipboard image (Windows) - async to avoid blocking event loop
   async function getClipboardImage() {
     if (process.platform !== 'win32') return null;
-    try {
-      const { execSync } = require('node:child_process');
-      // Check if clipboard has image
-      const hasImage = execSync(
-        'powershell -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::ContainsImage()"',
-        { encoding: 'utf8', timeout: 2000 }
-      ).trim();
-      if (hasImage !== 'True') return null;
-
-      // Get image as base64 PNG
-      const b64 = execSync(
-        'powershell -Command "Add-Type -AssemblyName System.Windows.Forms; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img) { $ms = New-Object System.IO.MemoryStream; $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); [Convert]::ToBase64String($ms.ToArray()) } else { \"\" }"',
-        { encoding: 'utf8', timeout: 5000 }
-      ).trim();
-      if (!b64) return null;
-      return { mimeType: 'image/png', data: b64 };
-    } catch {
-      return null;
-    }
+    const { exec } = require('node:child_process');
+    return new Promise((resolve) => {
+      exec(
+        'powershell -Command "Add-Type -AssemblyName System.Windows.Forms; if ([System.Windows.Forms.Clipboard]::ContainsImage()) { $img = [System.Windows.Forms.Clipboard]::GetImage(); $ms = New-Object System.IO.MemoryStream; $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); [Convert]::ToBase64String($ms.ToArray()) } else { \"\" }"',
+        { encoding: 'utf8', timeout: 5000 },
+        (err, stdout) => {
+          if (err || !stdout) return resolve(null);
+          const b64 = stdout.trim();
+          if (!b64) return resolve(null);
+          resolve({ mimeType: 'image/png', data: b64 });
+        }
+      );
+    });
   }
 
   try {
@@ -646,6 +640,12 @@ async function handleBuildCommand(root, arg, rl) {
   const cleanArg = arg.replace(/--yes\b/g, '').trim();
   const config = await loadConfig(root);
   const { planFeatures } = require('../orchestrator');
+
+  // In CLI mode (rl=null), --yes is required to proceed
+  if (!rl && !yes) {
+    process.stdout.write('Build command requires --yes flag in non-interactive mode.\n');
+    return true;
+  }
 
   process.stdout.write('Planning...\n');
   try {
@@ -828,7 +828,7 @@ async function handleRevertCommand(root, arg, rl) {
           const ts = new Date(entry.timestamp || Date.now()).toISOString();
           const type = entry.type || 'unknown';
           const msg = (entry.message || '').slice(0, 60);
-          process.stdout.write(`  ${lines.length - 1 - i}. [${ts}] ${type}: ${msg}\n`);
+          process.stdout.write(`  ${i}. [${ts}] ${type}: ${msg}\n`);
         } catch {}
       });
       process.stdout.write('\nUsage: /revert <id>  (or /revert latest)\n');
